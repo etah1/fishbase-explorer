@@ -6,6 +6,7 @@
 
 import asyncio
 import re
+import time
 import xml.etree.ElementTree as ET
 
 import duckdb
@@ -20,20 +21,26 @@ _S3_NS = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
 _VERSION_RE = re.compile(r"v(\d+\.\d+)/$")
 
 TRAIT_FIELDS = ["Fertilization", "ParentalCare", "RepGuild1", "RepGuild2", "MatingSystem", "FeedingType"]
+VERSION_CHECK_TTL_SECONDS = 60 * 60
 
 _lock = asyncio.Lock()
 _cache: dict = {
     "version": None,
+    "version_checked_at": 0.0,
     "species": None,
     "dangerous_categories": None,
     "genera": None,
-    "trait_categories": None,
     "body_shapes": None,
     "migration_categories": None,
 }
 
 
 async def get_latest_version(client: httpx.AsyncClient) -> str:
+    now = time.monotonic()
+    cached_version = _cache["version"]
+    if cached_version and now - _cache["version_checked_at"] < VERSION_CHECK_TTL_SECONDS:
+        return cached_version
+
     res = await client.get(LIST_URL)
     res.raise_for_status()
     root = ET.fromstring(res.text)
@@ -44,7 +51,9 @@ async def get_latest_version(client: httpx.AsyncClient) -> str:
             versions.append(match.group(1))
     if not versions:
         raise RuntimeError("No FishBase release versions found in bucket listing")
-    return max(versions, key=lambda v: tuple(int(p) for p in v.split(".")))
+    version = max(versions, key=lambda v: tuple(int(p) for p in v.split(".")))
+    _cache["version_checked_at"] = now
+    return version
 
 
 def _load_species(version: str):
@@ -106,10 +115,6 @@ async def get_species_table(client: httpx.AsyncClient):
             _cache["genera"] = sorted(df["Genus"].dropna().unique())
             _cache["body_shapes"] = sorted(df["BodyShapeI"].dropna().unique())
             _cache["migration_categories"] = sorted(df["AnaCat"].dropna().unique())
-            _cache["trait_categories"] = {
-                field: sorted(c for c in df[field].dropna().unique())
-                for field in TRAIT_FIELDS
-            }
     return _cache["species"], _cache["version"]
 
 
@@ -131,10 +136,4 @@ async def get_body_shapes(client: httpx.AsyncClient):
 async def get_migration_categories(client: httpx.AsyncClient):
     await get_species_table(client)
     return _cache["migration_categories"]
-
-
-async def get_trait_categories(client: httpx.AsyncClient):
-    await get_species_table(client)
-    return _cache["trait_categories"]
-
 

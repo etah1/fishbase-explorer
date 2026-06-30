@@ -17,6 +17,71 @@ body {
   background: var(--background);
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
+  position: relative;
 }
 
+html.dark body {
+  background: #000;
+}
+
+html.dark body::before {
+  background: radial-gradient(circle at center, #003087 0%, #001845 40%, transparent 75%);
+}
+
+html.dark body > * {
+  filter: invert(1);
+}
+
+html.dark select,
+html.dark input {
+  filter: invert(1);
+}
+
+html.dark .phylo-tree path { stroke: #6c3a02; }
+html.dark .phylo-tree text { fill: #000; }
+html.dark .phylo-tree circle { stroke: #6c3a02; filter: invert(1); }
+html.dark .legend-color { filter: invert(1); }
+
+/* Table dark mode: parent invert(1) gives black bg and white text.
+   Blue accents use pre-inverted values so they land on dark navy after inversion. */
+html.dark .light-surface .bg-blue-50 { background-color: #ffedcd; }
+html.dark .light-surface .text-blue-900 { color: #000; }
+html.dark .light-surface tbody tr { border-color: #ffe7ba; }
+html.dark .light-surface .border-blue-100 { border-color: #ffe7ba; }
+html.dark .light-surface .hover\:bg-blue-50:hover { background-color: #ffe7ba; }
+html.dark .light-surface .hover\:bg-blue-100:hover { background-color: #ffcf78; }
+html.dark .light-surface .hover\:text-blue-950:hover { color: #000; }
+html.dark .light-surface thead { border-bottom: 1px solid #ffe7ba; }
+
+body::before {
+  animation: ball-pulse 18s ease-in-out infinite;
+  background: radial-gradient(circle at center, #9fd1ff 0%, #cfe9ff 40%, transparent 75%);
+  border-radius: 50%;
+  content: "";
+  filter: blur(60px);
+  height: 90vmax;
+  left: 50%;
+  pointer-events: none;
+  position: fixed;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 90vmax;
+  z-index: 0;
+}
+
+body > * {
+  position: relative;
+  z-index: 1;
+}
+
+@keyframes ball-pulse {
+  0%, 100% {
+    filter: blur(60px);
+    transform: translate(-50%, -50%) scale(1);
+  }
+  50% {
+    filter: blur(75px);
+    transform: translate(-50%, -50%) scale(1.1);
+  }
+}
 

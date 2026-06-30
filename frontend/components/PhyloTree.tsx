@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 import { hierarchy } from "d3-hierarchy";
 import { scaleLinear, scaleOrdinal, scaleSequential } from "d3-scale";
 import { interpolateViridis, schemeTableau10 } from "d3-scale-chromatic";
@@ -18,16 +18,28 @@ const LABEL_WIDTH = 320;
 const MARGIN = { top: 16, right: 16, bottom: 16, left: 16 };
 const NO_DATA_COLOR = "#bfdbfe";
 
+export type LegendItem = { label: string; color: string };
+
 type Positioned = ReturnType<typeof hierarchy<TreeNode>> & { x: number; y: number };
+
+export function formatLegendLabel(label: string) {
+  return label
+    .split(" ")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
 
 export default function PhyloTree({
   data,
   trait,
   isContinuous,
+  onLegendChange,
 }: {
   data: TreeNode;
   trait: string;
   isContinuous: boolean;
+  onLegendChange?: (legend: LegendItem[]) => void;
 }) {
   const root = useMemo(() => hierarchy(data, (d) => d.children), [data]);
 
@@ -55,7 +67,7 @@ export default function PhyloTree({
     const height = leaves.length * LEAF_HEIGHT;
 
     let colorOf: (leaf: Positioned) => string;
-    let legend: { label: string; color: string }[];
+    let legend: LegendItem[];
 
     const hasMissing = leaves.some((d) => d.data.traits?.[trait] == null);
 
@@ -97,24 +109,16 @@ export default function PhyloTree({
     return { nodes, links, xScale, height, colorOf, legend };
   }, [root, trait, isContinuous]);
 
+  useEffect(() => {
+    onLegendChange?.(legend);
+  }, [legend, onLegendChange]);
+
   const width = MARGIN.left + TREE_WIDTH + LABEL_WIDTH + MARGIN.right;
   const svgHeight = MARGIN.top + height + MARGIN.bottom;
 
   return (
     <div>
-      <div className="mb-3 flex flex-wrap gap-3 text-xs text-blue-800">
-        {legend.map((item) => (
-          <span key={item.label} className="flex items-center gap-1.5">
-            <span
-              className="inline-block h-3 w-3 rounded-full border border-blue-200"
-              style={{ backgroundColor: item.color }}
-            />
-            {item.label}
-          </span>
-        ))}
-      </div>
-
-      <div className="w-full overflow-auto rounded-lg border border-blue-100 bg-white shadow-sm" style={{ maxHeight: "75vh" }}>
+      <div className="phylo-tree w-full overflow-auto rounded-lg border border-blue-100 bg-white shadow-sm" style={{ maxHeight: "75vh" }}>
         <svg width={width} height={svgHeight}>
           <g transform={`translate(${MARGIN.left},${MARGIN.top})`}>
             {links.map((link, i) => {
@@ -154,4 +158,7 @@ export default function PhyloTree({
     </div>
   );
 }
+
+
+
 

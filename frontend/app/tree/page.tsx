@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import PhyloTree, { TreeNode } from "@/components/PhyloTree";
+import PhyloTree, { formatLegendLabel, LegendItem, TreeNode } from "@/components/PhyloTree";
+import DarkModeToggle from "@/components/DarkModeToggle";
 
 const API = "http://localhost:8000";
 
@@ -26,41 +27,61 @@ export default function TreePage() {
   const [trait, setTrait] = useState("RepGuild2");
   const [builtTrait, setBuiltTrait] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [legend, setLegend] = useState<LegendItem[]>([]);
 
   async function handleCreate() {
     setLoading(true);
-    const res = await fetch(`${API}/fish/tree?trait=${trait}`);
-    const data = await res.json();
-    setTree(data);
-    setBuiltTrait(trait);
-    setLoading(false);
+    setError("");
+    setLegend([]);
+    try {
+      const res = await fetch(`${API}/fish/tree?trait=${trait}`);
+      if (!res.ok) {
+        throw new Error(`Tree request failed (${res.status})`);
+      }
+      const data = await res.json();
+      setTree(data);
+      setBuiltTrait(trait);
+    } catch (err) {
+      setTree(null);
+      setBuiltTrait(null);
+      setError(err instanceof Error ? err.message : "Could not build phylogeny.");
+      setLegend([]);
+    } finally {
+      setLoading(false);
+    }
   }
 
   const totalLeaves = tree ? countLeaves(tree) : 0;
 
   return (
-    <main className="min-h-screen w-full bg-white px-4 py-8 text-slate-900 sm:px-6 lg:px-8">
-      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-4 border-b border-blue-100 pb-4">
-        <h1 className="text-3xl font-bold text-blue-950">Cichlid Phylogeny</h1>
-        <Link
-          href="/fish"
-          className="rounded-full border border-blue-200 px-4 py-2 text-sm font-medium text-blue-700 hover:bg-blue-50"
-        >
-          Browse cichlids
-        </Link>
+    <main className="min-h-screen w-full bg-transparent px-4 py-8 text-black sm:px-6 lg:px-8">
+      <div className="mb-6 flex flex-wrap items-start justify-between gap-4 border-b border-blue-100 pb-4">
+        <div>
+          <h1 className="text-3xl font-bold text-black">Cichlid Phylogeny</h1>
+          <p className="mt-1 text-xs text-black">
+            Pick a trait and build a tree of only the cichlid species that have
+            data for it, placed on a time-calibrated phylogeny (
+            <a href="https://fishtreeoflife.org" className="text-black underline" target="_blank">
+              Fish Tree of Life
+            </a>
+            ){tree ? `, ${totalLeaves} species have data for ${TRAIT_OPTIONS.find((t) => t.key === builtTrait)?.label}` : "."}
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <DarkModeToggle />
+          <Link
+            href="/"
+            className="rounded-full border border-black px-4 py-2 text-sm font-medium text-black hover:bg-blue-50"
+          >
+            Browse cichlids
+          </Link>
+        </div>
       </div>
-      <p className="mb-6 text-blue-700">
-        Pick a trait and build a tree of only the cichlid species that have
-        data for it, placed on a time-calibrated phylogeny (
-        <a href="https://fishtreeoflife.org" className="text-blue-800 underline" target="_blank">
-          Fish Tree of Life
-        </a>
-        ){tree ? `, ${totalLeaves} species have data for ${TRAIT_OPTIONS.find((t) => t.key === builtTrait)?.label}` : "."}
-      </p>
 
-      <div className="mb-6 flex w-full flex-wrap items-center gap-3">
+      <div className="mb-6 flex w-full items-center gap-3">
         <select
-          className="rounded-lg border border-blue-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+          className="rounded-lg border border-black bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
           value={trait}
           onChange={(e) => setTrait(e.target.value)}
         >
@@ -72,22 +93,41 @@ export default function TreePage() {
         <button
           onClick={handleCreate}
           disabled={loading}
-          className="rounded-full bg-blue-600 px-5 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          className="rounded-full border border-black px-4 py-2 text-sm font-medium text-black hover:bg-blue-50 disabled:opacity-50"
         >
           {loading ? "Building..." : "Create Phylogeny"}
         </button>
+
+        {legend.length > 0 && (
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3 text-xs text-black">
+            {legend.map((item) => (
+              <span key={item.label} className="flex items-center gap-2">
+                <span
+                  className="legend-color inline-block h-4 w-4 rounded-full border border-black"
+                  style={{ backgroundColor: item.color }}
+                />
+                {formatLegendLabel(item.label)}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
 
       {loading ? (
-        <p className="py-12 text-center text-blue-300">Building tree...</p>
+        <p className="py-12 text-center text-black">Building tree...</p>
+      ) : error ? (
+        <p className="py-12 text-center text-black">{error}</p>
       ) : tree && builtTrait ? (
-        <PhyloTree data={tree} trait={builtTrait} isContinuous={builtTrait === "Encephalization"} />
+        <PhyloTree data={tree} trait={builtTrait} isContinuous={builtTrait === "Encephalization"} onLegendChange={setLegend} />
       ) : (
-        <p className="py-12 text-center text-blue-300">
+        <p className="py-12 text-center text-black">
           Select a trait and click &quot;Create Phylogeny&quot; to build the tree.
         </p>
       )}
     </main>
   );
 }
+
+
+
 

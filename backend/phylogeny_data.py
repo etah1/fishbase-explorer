@@ -48,7 +48,7 @@ def _build_tree(raw_xz: bytes, traits_by_name: dict):
     return _node_to_dict(tree.seed_node, traits_by_name)
 
 
-async def get_cichlid_tree(client: httpx.AsyncClient):
+async def get_cichlid_tree(client: httpx.AsyncClient, trait: str | None = None):
     head = await client.head(TREE_URL)
     etag = head.headers.get("etag")
 
@@ -62,12 +62,29 @@ async def get_cichlid_tree(client: httpx.AsyncClient):
         for row in df.to_dict(orient="records")
     }
 
+    cache_key = trait or "__all__"
     async with _lock:
         if _cache["etag"] != etag or _cache["fish_version"] != fish_version:
             res = await client.get(TREE_URL)
             res.raise_for_status()
-            tree = await asyncio.to_thread(_build_tree, res.content, traits_by_name)
             _cache["etag"] = etag
             _cache["fish_version"] = fish_version
-            _cache["tree"] = tree
-    return _cache["tree"]
+            _cache["raw_xz"] = res.content
+            _cache["trees"] = {}
+
+        if cache_key not in _cache["trees"]:
+            if trait:
+                wanted = {
+                    name: values
+                    for name, values in traits_by_name.items()
+                    if values.get(trait) is not None
+                }
+            else:
+                wanted = traits_by_name
+            _cache["trees"][cache_key] = await asyncio.to_thread(
+                _build_tree,
+                _cache["raw_xz"],
+                wanted,
+            )
+
+    return _cache["trees"][cache_key]

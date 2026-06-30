@@ -33,17 +33,17 @@ handful of species).
 fishbase-explorer/
 ├── backend/
 │   ├── main.py             # FastAPI server
-│   ├── fishbase_data.py    # Live-checking Parquet data layer
+│   ├── fishbase_data.py    # Parquet data layer with version caching
 │   ├── phylogeny_data.py   # Tree pruning + trait attachment
 │   └── requirements.txt
 └── frontend/
     ├── app/
-    │   ├── page.tsx        # Landing page
-    │   ├── fish/page.tsx   # Filter UI
-    │   └── tree/page.tsx   # Phylogeny view
+    │   ├── page.tsx        # Filter UI (/)
+    │   └── tree/page.tsx   # Phylogeny view (/tree)
     └── components/
         ├── FishTable.tsx
-        └── PhyloTree.tsx
+        ├── PhyloTree.tsx
+        └── DarkModeToggle.tsx
 ```
 
 ## Running locally
@@ -62,10 +62,7 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000/fish
+Open http://localhost:3000
 
 ## Filters
-- Genus (dropdown, scoped to Cichlidae)
-- Habitat: freshwater / saltwater / brackish
-- Max length (cm)
-- Dangerous category (e.g. harmless, venomous, traumatogenic)
+- Genus, Habitat, Max length (cm), Dangerous category, Body shape, Migration pattern

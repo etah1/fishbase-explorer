@@ -144,10 +144,4 @@ async def get_tree(trait: str = Query(None)):
     return tree
 
 
-@app.get("/fish/trait-categories")
-async def get_trait_categories():
-    async with httpx.AsyncClient(timeout=15) as client:
-        categories = await fishbase_data.get_trait_categories(client)
-    return {"categories": categories}
-
 
