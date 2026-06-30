@@ -10,7 +10,7 @@ app = FastAPI(title="FishBase Explorer API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://localhost:\d+|https://.*\.vercel\.app",
+    allow_origin_regex=r"https?://localhost:\d+|https://cichlidfishexplorer\.com",
     allow_methods=["GET"],
     allow_headers=["*"],
 )
