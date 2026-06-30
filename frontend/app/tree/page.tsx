@@ -5,7 +5,7 @@ import Link from "next/link";
 import PhyloTree, { formatLegendLabel, LegendItem, TreeNode } from "@/components/PhyloTree";
 import DarkModeToggle from "@/components/DarkModeToggle";
 
-const API = "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 const TRAIT_OPTIONS = [
   { key: "Fertilization", label: "Fertilization site" },

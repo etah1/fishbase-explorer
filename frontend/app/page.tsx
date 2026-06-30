@@ -5,7 +5,7 @@ import Link from "next/link";
 import FishTable, { SortDir, SortKey } from "@/components/FishTable";
 import DarkModeToggle from "@/components/DarkModeToggle";
 
-const API = "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const PER_PAGE = 50;
 
 function formatLabel(value: string) {
