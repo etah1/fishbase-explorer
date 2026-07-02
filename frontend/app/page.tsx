@@ -1,9 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import Link from "next/link";
 import FishTable, { SortDir, SortKey } from "@/components/FishTable";
-import DarkModeToggle from "@/components/DarkModeToggle";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 const PER_PAGE = 50;
@@ -25,6 +23,7 @@ export default function FishPage() {
   const [loading, setLoading] = useState(false);
   const [fishbaseVersion, setFishbaseVersion] = useState("");
 
+  const [search, setSearch] = useState("");
   const [genus, setGenus] = useState("");
   const [habitat, setHabitat] = useState("");
   const [maxLength, setMaxLength] = useState("");
@@ -53,6 +52,7 @@ export default function FishPage() {
   const fetchFish = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams();
+    if (search) params.set("q", search);
     if (genus) params.set("genus", genus);
     if (habitat) params.set("habitat", habitat);
     const parsedMaxLength = Number(maxLength);
@@ -73,7 +73,7 @@ export default function FishPage() {
     setTotal(data.total);
     setFishbaseVersion(data.fishbase_version);
     setLoading(false);
-  }, [genus, habitat, maxLength, dangerous, bodyShape, migration, page, sortBy, sortDir]);
+  }, [search, genus, habitat, maxLength, dangerous, bodyShape, migration, page, sortBy, sortDir]);
 
   useEffect(() => {
     fetchFish();
@@ -97,30 +97,21 @@ export default function FishPage() {
   }
 
   const totalPages = Math.ceil(total / PER_PAGE);
+  const fieldClass = "h-8 shrink-0 rounded-md border border-black bg-white px-2.5 text-xs text-black shadow-sm focus:border-[#1b7cb2] focus:outline-none focus:ring-2 focus:ring-white";
 
   return (
     <main className="min-h-screen w-full bg-transparent px-4 py-8 text-black sm:px-6 lg:px-8">
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-4 border-b border-blue-100 pb-4">
-        <div>
-          <h1 className="text-3xl font-bold text-black">Cichlid Explorer</h1>
-          <p className="mt-1 text-xs text-black">
-            Powered by FishBase{fishbaseVersion ? ` v${fishbaseVersion}` : ""}, {total} cichlid species found
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <DarkModeToggle />
-          <Link
-            href="/tree"
-            className="rounded-full border border-black px-4 py-2 text-sm font-medium text-black hover:bg-blue-50"
-          >
-            View phylogeny
-          </Link>
-        </div>
-      </div>
+      <div className="mb-6 flex w-full flex-nowrap items-center gap-2 overflow-x-auto pb-1">
+        <input
+          type="search"
+          className={`${fieldClass} w-44 rounded-full placeholder:text-slate-500`}
+          placeholder="Search species"
+          value={search}
+          onChange={handleFilterChange(setSearch)}
+        />
 
-      <div className="mb-6 flex w-full flex-wrap items-center gap-3">
         <select
-          className="w-44 rounded-lg border border-black bg-white px-3 py-2 text-sm text-black shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+          className={`${fieldClass} w-28`}
           value={genus}
           onChange={handleFilterChange(setGenus)}
         >
@@ -129,7 +120,7 @@ export default function FishPage() {
         </select>
 
         <select
-          className="rounded-lg border border-black bg-white px-3 py-2 text-sm text-black shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+          className={`${fieldClass} w-32`}
           value={habitat}
           onChange={handleFilterChange(setHabitat)}
         >
@@ -141,7 +132,7 @@ export default function FishPage() {
 
         <input
           type="number"
-          className="w-40 rounded-lg border border-black bg-white px-3 py-2 text-sm text-black shadow-sm placeholder:text-black focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+          className={`${fieldClass} w-32 placeholder:text-slate-500`}
           min="0"
           step="0.001"
           placeholder="Under length (cm)"
@@ -150,7 +141,7 @@ export default function FishPage() {
         />
 
         <select
-          className="rounded-lg border border-black bg-white px-3 py-2 text-sm text-black shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+          className={`${fieldClass} w-36`}
           value={dangerous}
           onChange={handleFilterChange(setDangerous)}
         >
@@ -159,7 +150,7 @@ export default function FishPage() {
         </select>
 
         <select
-          className="rounded-lg border border-black bg-white px-3 py-2 text-sm text-black shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+          className={`${fieldClass} w-36`}
           value={bodyShape}
           onChange={handleFilterChange(setBodyShape)}
         >
@@ -168,7 +159,7 @@ export default function FishPage() {
         </select>
 
         <select
-          className="rounded-lg border border-black bg-white px-3 py-2 text-sm text-black shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
+          className={`${fieldClass} w-40`}
           value={migration}
           onChange={handleFilterChange(setMigration)}
         >
@@ -177,24 +168,24 @@ export default function FishPage() {
         </select>
 
         {totalPages > 1 && (
-        <div className="ml-auto flex items-center gap-3">
-          <button
-            className="rounded-lg border border-black px-4 py-2 text-sm font-medium text-black hover:bg-blue-50 disabled:opacity-40"
-            disabled={page === 1}
-            onClick={() => setPage((p) => p - 1)}
-          >
-            Previous
-          </button>
-          <span className="text-sm text-black">Page {page} of {totalPages}</span>
-          <button
-            className="rounded-lg border border-black px-4 py-2 text-sm font-medium text-black hover:bg-blue-50 disabled:opacity-40"
-            disabled={page >= totalPages}
-            onClick={() => setPage((p) => p + 1)}
-          >
-            Next
-          </button>
-        </div>
-      )}
+          <div className="ml-auto flex shrink-0 items-center gap-1.5">
+            <button
+              className="h-8 rounded-md border border-black bg-white px-2 text-xs font-medium text-black hover:bg-black hover:text-white disabled:opacity-40"
+              disabled={page === 1}
+              onClick={() => setPage((p) => p - 1)}
+            >
+              Previous
+            </button>
+            <span className="whitespace-nowrap text-xs text-black">{page}/{totalPages}</span>
+            <button
+              className="h-8 rounded-md border border-black bg-white px-2 text-xs font-medium text-black hover:bg-black hover:text-white disabled:opacity-40"
+              disabled={page >= totalPages}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              Next
+            </button>
+          </div>
+        )}
       </div>
 
       {loading ? (
@@ -202,16 +193,11 @@ export default function FishPage() {
       ) : (
         <FishTable fish={fish} onSort={handleSort} />
       )}
+
+      <p className="mt-6 bottom-blue-divider border-t pt-4 text-xs text-black">
+        Powered by FishBase{fishbaseVersion ? ` v${fishbaseVersion}` : ""}, {total} cichlid species found
+      </p>
     </main>
   );
 }
-
-
-
-
-
-
-
-
-
 

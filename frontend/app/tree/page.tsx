@@ -1,9 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import Link from "next/link";
 import PhyloTree, { formatLegendLabel, LegendItem, TreeNode } from "@/components/PhyloTree";
-import DarkModeToggle from "@/components/DarkModeToggle";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -53,32 +51,10 @@ export default function TreePage() {
   }
 
   const totalLeaves = tree ? countLeaves(tree) : 0;
+  const builtTraitLabel = TRAIT_OPTIONS.find((t) => t.key === builtTrait)?.label;
 
   return (
     <main className="min-h-screen w-full bg-transparent px-4 py-8 text-black sm:px-6 lg:px-8">
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-4 border-b border-blue-100 pb-4">
-        <div>
-          <h1 className="text-3xl font-bold text-black">Cichlid Phylogeny</h1>
-          <p className="mt-1 text-xs text-black">
-            Pick a trait and build a tree of only the cichlid species that have
-            data for it, placed on a time-calibrated phylogeny (
-            <a href="https://fishtreeoflife.org" className="text-black underline" target="_blank">
-              Fish Tree of Life
-            </a>
-            ){tree ? `, ${totalLeaves} species have data for ${TRAIT_OPTIONS.find((t) => t.key === builtTrait)?.label}` : "."}
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          <DarkModeToggle />
-          <Link
-            href="/"
-            className="rounded-full border border-black px-4 py-2 text-sm font-medium text-black hover:bg-blue-50"
-          >
-            Browse cichlids
-          </Link>
-        </div>
-      </div>
-
       <div className="mb-6 flex w-full items-center gap-3">
         <select
           className="rounded-lg border border-black bg-white px-3 py-2 text-sm text-slate-800 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100"
@@ -124,10 +100,16 @@ export default function TreePage() {
           Select a trait and click &quot;Create Phylogeny&quot; to build the tree.
         </p>
       )}
+
+      <p className="mt-6 bottom-blue-divider border-t pt-4 text-xs text-black">
+        Pick a trait and build a tree of only the cichlid species that have
+        data for it, placed on a time-calibrated phylogeny (
+        <a href="https://fishtreeoflife.org" className="text-black underline" target="_blank">
+          Fish Tree of Life
+        </a>
+        ){tree && builtTraitLabel ? `, ${totalLeaves} species have data for ${builtTraitLabel}` : "."}
+      </p>
     </main>
   );
 }
-
-
-
 

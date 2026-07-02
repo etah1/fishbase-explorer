@@ -64,6 +64,7 @@ def _sort_fish(df, sort_by: str, sort_dir: str):
 
 @app.get("/fish")
 async def get_fish(
+    q: str = Query(None),
     genus: str = Query(None),
     habitat: str = Query(None),
     max_length: float = Query(None),
@@ -78,6 +79,19 @@ async def get_fish(
     async with httpx.AsyncClient(timeout=15) as client:
         df, version = await fishbase_data.get_species_table(client)
 
+    if q:
+        query = q.strip().casefold()
+        if query:
+            scientific_name = (
+                df["Genus"].fillna("").astype(str)
+                + " "
+                + df["Species"].fillna("").astype(str)
+            )
+            common_name = df["FBname"].fillna("").astype(str)
+            df = df[
+                scientific_name.str.casefold().str.contains(query, regex=False)
+                | common_name.str.casefold().str.contains(query, regex=False)
+            ]
     if genus:
         df = df[df["Genus"] == genus]
     if habitat == "fresh":
@@ -142,6 +156,3 @@ async def get_tree(trait: str = Query(None)):
     async with httpx.AsyncClient(timeout=30) as client:
         tree = await phylogeny_data.get_cichlid_tree(client, trait=trait)
     return tree
-
-
-

@@ -37,6 +37,19 @@ html.dark input {
   filter: invert(1);
 }
 
+html.dark .brand-logo {
+  filter: invert(1);
+}
+.nav-blue-divider,
+.bottom-blue-divider {
+  border-color: #9fd1ff;
+}
+
+html.dark .nav-blue-divider,
+html.dark .bottom-blue-divider {
+  border-color: #ffe7ba;
+}
+
 html.dark .phylo-tree path { stroke: #6c3a02; }
 html.dark .phylo-tree text { fill: #000; }
 html.dark .phylo-tree circle { stroke: #6c3a02; filter: invert(1); }
