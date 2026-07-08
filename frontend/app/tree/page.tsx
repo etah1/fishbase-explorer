@@ -21,11 +21,9 @@ const AVAILABLE_COLUMNS: ColumnDef[] = [
   { key: "GrowthRate", label: "Growth rate (K)", type: "continuous" },
 ];
 
-const DEFAULT_KEYS = ["RepGuild2", "Encephalization"];
-
 export default function TreePage() {
   const [tree, setTree] = useState<TreeNode | null>(null);
-  const [selected, setSelected] = useState<string[]>(DEFAULT_KEYS);
+  const [selected, setSelected] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [legends, setLegends] = useState<ColumnLegend[]>([]);
