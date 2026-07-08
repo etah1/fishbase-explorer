@@ -130,7 +130,7 @@ export default function TreePage() {
             : ""}
           {excluded.length > 0 ? ` (${excluded.length} species manually excluded)` : ""}
           , branching based on{" "}
-          <a href="https://opentreeoflife.org" className="text-black underline" target="_blank">
+          <a href="https://tree.opentreeoflife.org" className="text-black underline" target="_blank" rel="noopener noreferrer">
             Open Tree of Life
           </a>
           . Species without an exact match there are placed next to their genus
