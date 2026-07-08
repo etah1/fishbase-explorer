@@ -1,34 +1,34 @@
-# Real evolutionary tree data, pruned to our Cichlidae species.
-# FishBase has no ancestry/phylogeny data, so this comes from a separate
-# source: Fish Tree of Life (https://fishtreeoflife.org), a time-calibrated
-# phylogeny covering ~12k ray-finned fish species. Only species with an
-# exact name match in that tree can be placed on it.
+# Open Tree of Life supplies topology; unmatched taxa are grafted as unresolved genus or subfamily branches.
 
 import asyncio
-import lzma
-import math
+import re
+from collections import defaultdict
 
 import dendropy
 import httpx
 
 import fishbase_data
+import tree_overrides
 
-TREE_URL = "https://fishtreeoflife.org/downloads/actinopt_12k_treePL.tre.xz"
+MATCH_URL = "https://api.opentreeoflife.org/v3/tnrs/match_names"
+SUBTREE_URL = "https://api.opentreeoflife.org/v3/tree_of_life/induced_subtree"
+TNRS_BATCH_SIZE = 1000
+_OTT_SUFFIX_RE = re.compile(r"_ott\d+$")
 
 _lock = asyncio.Lock()
-_cache: dict = {"etag": None, "fish_version": None, "raw_xz": None, "trees": {}}
+_cache: dict = {"fish_version": None, "newick": None, "trees": {}}
 
 
 def _clean(value):
-    if isinstance(value, float) and math.isnan(value):
+    if isinstance(value, float) and value != value:
         return None
     return value
 
 
 def _node_to_dict(node, traits_by_name):
-    out = {"length": node.edge.length or 0}
-    if node.taxon:
-        name = node.taxon.label.replace(" ", "_")
+    out = {"length": 1}
+    if node.is_leaf() and node.taxon:
+        name = node.taxon.label
         out["name"] = name
         out["traits"] = traits_by_name.get(name, {})
     children = node.child_nodes()
@@ -37,41 +37,151 @@ def _node_to_dict(node, traits_by_name):
     return out
 
 
-def _build_tree(raw_xz: bytes, traits_by_name: dict):
-    newick = lzma.decompress(raw_xz).decode()
+async def _resolve_ott_ids(client: httpx.AsyncClient, names: list[str]) -> dict[str, int]:
+    """Map 'Genus species' -> OTT id for names that resolve unambiguously."""
+    name_to_ott: dict[str, int] = {}
+    for i in range(0, len(names), TNRS_BATCH_SIZE):
+        batch = names[i : i + TNRS_BATCH_SIZE]
+        res = await client.post(
+            MATCH_URL,
+            json={"names": batch, "do_approximate_matching": False},
+            timeout=60,
+        )
+        res.raise_for_status()
+        for r in res.json().get("results", []):
+            matches = r.get("matches", [])
+            if len(matches) == 1:
+                name_to_ott[r["name"]] = matches[0]["taxon"]["ott_id"]
+    return name_to_ott
+
+
+async def _fetch_induced_newick(client: httpx.AsyncClient, ott_ids: list[int]) -> str:
+    """Fetch OToL's induced subtree, pruning any OTT ids it reports as unknown."""
+    ott_ids = list(ott_ids)
+    for _ in range(20):
+        res = await client.post(SUBTREE_URL, json={"ott_ids": ott_ids}, timeout=120)
+        body = res.json()
+        if res.status_code == 200:
+            return body["newick"]
+        unknown = body.get("unknown")
+        if not unknown:
+            res.raise_for_status()
+        for ott_key in unknown:
+            bad_id = int(ott_key.replace("ott", ""))
+            if bad_id in ott_ids:
+                ott_ids.remove(bad_id)
+    raise RuntimeError("Could not resolve OToL induced_subtree after pruning unknown ids")
+
+
+async def _build_backbone_newick(client: httpx.AsyncClient, species_names: list[str]) -> str:
+    name_to_ott = await _resolve_ott_ids(client, species_names)
+    return await _fetch_induced_newick(client, list(name_to_ott.values()))
+
+
+def _target_node(tree, anchor_leaves: list):
+    """Attach under an anchor clade or the parent of one anchor leaf."""
+    if len(anchor_leaves) > 1:
+        return tree.mrca(taxa=[leaf.taxon for leaf in anchor_leaves])
+    return anchor_leaves[0].parent_node
+
+
+def _attach_unplaced(tree, all_names: set, genus_of: dict, subfamily_of: dict):
+    """Place unmatched species as unresolved genus or subfamily branches."""
+    placed = {leaf.taxon.label for leaf in tree.leaf_node_iter()}
+    unplaced = sorted(all_names - placed)
+    if not unplaced:
+        return
+
+    genus_tips = defaultdict(list)
+    subfamily_tips = defaultdict(list)
+    for leaf in tree.leaf_node_iter():
+        name = leaf.taxon.label
+        genus_tips[genus_of.get(name)].append(leaf)
+        subfamily_tips[subfamily_of.get(name)].append(leaf)
+
+    by_genus = defaultdict(list)
+    for name in unplaced:
+        by_genus[genus_of.get(name)].append(name)
+
+    still_unplaced = []
+    for genus, names in by_genus.items():
+        anchors = genus_tips.get(genus)
+        if not anchors:
+            still_unplaced.extend(names)
+            continue
+        target = _target_node(tree, anchors)
+        for name in names:
+            leaf = target.new_child(taxon=tree.taxon_namespace.new_taxon(label=name))
+            leaf.edge.length = 1
+
+    by_subfamily = defaultdict(list)
+    for name in still_unplaced:
+        by_subfamily[subfamily_of.get(name)].append(name)
+
+    for subfamily, names in by_subfamily.items():
+        anchors = subfamily_tips.get(subfamily)
+        if not anchors:
+            continue
+        target = _target_node(tree, anchors)
+        for name in names:
+            leaf = target.new_child(taxon=tree.taxon_namespace.new_taxon(label=name))
+            leaf.edge.length = 1
+
+
+def _build_dendropy_tree(newick: str, wanted_names: set, genus_of: dict, subfamily_of: dict):
     tree = dendropy.Tree.get(data=newick, schema="newick")
-    taxa_to_retain = [
-        t for t in tree.taxon_namespace
-        if t.label.replace(" ", "_") in traits_by_name
-    ]
+    tree.is_rooted = True
+    for taxon in tree.taxon_namespace:
+        taxon.label = _OTT_SUFFIX_RE.sub("", taxon.label.replace(" ", "_"))
+    taxa_to_retain = [t for t in tree.taxon_namespace if t.label in wanted_names]
     tree.retain_taxa(taxa_to_retain)
+    _attach_unplaced(tree, wanted_names, genus_of, subfamily_of)
+    tree_overrides.apply(tree)
+    return tree
+
+
+def _build_tree(newick: str, traits_by_name: dict, genus_of: dict, subfamily_of: dict):
+    tree = _build_dendropy_tree(newick, set(traits_by_name), genus_of, subfamily_of)
     return _node_to_dict(tree.seed_node, traits_by_name)
 
 
-async def get_cichlid_tree(client: httpx.AsyncClient, trait: str | None = None):
-    head = await client.head(TREE_URL)
-    etag = head.headers.get("etag")
+async def _ensure_backbone(client: httpx.AsyncClient, df, fish_version: str) -> str:
+    """Fetch the backbone only when the FishBase species version changes."""
+    async with _lock:
+        if _cache["fish_version"] != fish_version:
+            species_names = [f"{g} {s}" for g, s in zip(df["Genus"], df["Species"])]
+            newick = await _build_backbone_newick(client, species_names)
+            _cache["fish_version"] = fish_version
+            _cache["newick"] = newick
+            _cache["trees"] = {}
+        return _cache["newick"]
 
+
+def _lookup_tables(df):
+    genus_of = {f"{row['Genus']}_{row['Species']}": row["Genus"] for row in df.to_dict(orient="records")}
+    subfamily_of = {f"{row['Genus']}_{row['Species']}": row.get("Subfamily") for row in df.to_dict(orient="records")}
+    return genus_of, subfamily_of
+
+
+async def get_cichlid_tree(client: httpx.AsyncClient, trait: str | None = None):
     async with httpx.AsyncClient(timeout=15) as fb_client:
         df, fish_version = await fishbase_data.get_species_table(fb_client)
 
     traits_by_name = {
         f"{row['Genus']}_{row['Species']}": {
-            field: _clean(row[field]) for field in fishbase_data.TRAIT_FIELDS + ["Encephalization"]
+            field: _clean(row[field])
+            for field in fishbase_data.TRAIT_FIELDS
+            + ["Encephalization", "Subfamily", "Country", "Continent", "Lake",
+               "IUCN_Code", "GrowthRate"]
         }
         for row in df.to_dict(orient="records")
     }
+    genus_of, subfamily_of = _lookup_tables(df)
+
+    newick = await _ensure_backbone(client, df, fish_version)
 
     cache_key = trait or "__all__"
     async with _lock:
-        if _cache["etag"] != etag or _cache["fish_version"] != fish_version:
-            res = await client.get(TREE_URL)
-            res.raise_for_status()
-            _cache["etag"] = etag
-            _cache["fish_version"] = fish_version
-            _cache["raw_xz"] = res.content
-            _cache["trees"] = {}
-
         if cache_key not in _cache["trees"]:
             if trait:
                 wanted = {
@@ -83,8 +193,21 @@ async def get_cichlid_tree(client: httpx.AsyncClient, trait: str | None = None):
                 wanted = traits_by_name
             _cache["trees"][cache_key] = await asyncio.to_thread(
                 _build_tree,
-                _cache["raw_xz"],
+                newick,
                 wanted,
+                genus_of,
+                subfamily_of,
             )
 
     return _cache["trees"][cache_key]
+
+
+async def get_admin_tree(client: httpx.AsyncClient):
+    """Build the full override-checked tree for the admin CLI."""
+    df, fish_version = await fishbase_data.get_species_table(client)
+    all_names = {f"{row['Genus']}_{row['Species']}" for row in df.to_dict(orient="records")}
+    genus_of, subfamily_of = _lookup_tables(df)
+    newick = await _ensure_backbone(client, df, fish_version)
+    return await asyncio.to_thread(_build_dendropy_tree, newick, all_names, genus_of, subfamily_of)
+
+

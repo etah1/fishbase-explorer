@@ -10,9 +10,14 @@ type Fish = {
   Length: number | null;
   BodyShapeI: string | null;
   AnaCat: string | null;
+  Country: string | null;
+  Continent: string | null;
+  Lake: string | null;
 };
 
-export type SortKey = "species" | "common_name" | "habitat" | "length" | "dangerous" | "body_shape" | "migration";
+export type SortKey =
+  | "species" | "common_name" | "habitat" | "length" | "dangerous"
+  | "body_shape" | "migration" | "location";
 export type SortDir = "asc" | "desc";
 
 type FishTableProps = {
@@ -28,6 +33,7 @@ const COLUMNS: { key: SortKey; label: string }[] = [
   { key: "dangerous", label: "Dangerous" },
   { key: "body_shape", label: "Body Shape" },
   { key: "migration", label: "Migration" },
+  { key: "location", label: "Location" },
 ];
 
 function formatLabel(value: string) {
@@ -39,6 +45,14 @@ function formatLabel(value: string) {
 
 function formatLength(value: number | null) {
   return value == null ? "-" : value.toFixed(3);
+}
+
+function formatLocation(f: Fish) {
+  const parts: string[] = [];
+  if (f.Lake) parts.push(f.Lake.split("; ").map((l) => `Lake ${l}`).join(", "));
+  if (f.Country) parts.push(f.Country);
+  if (f.Continent) parts.push(`(${f.Continent})`);
+  return parts.length ? parts.join(", ") : "-";
 }
 
 export default function FishTable({ fish, onSort }: FishTableProps) {
@@ -77,6 +91,7 @@ export default function FishTable({ fish, onSort }: FishTableProps) {
               <td className="px-4 py-3 text-black">{f.Dangerous ? formatLabel(f.Dangerous) : "-"}</td>
               <td className="px-4 py-3 text-black">{f.BodyShapeI ? formatLabel(f.BodyShapeI) : "-"}</td>
               <td className="px-4 py-3 text-black">{f.AnaCat ? formatLabel(f.AnaCat) : "-"}</td>
+              <td className="px-4 py-3 text-black">{formatLocation(f)}</td>
             </tr>
           ))}
         </tbody>

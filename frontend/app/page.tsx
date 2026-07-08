@@ -19,6 +19,7 @@ export default function FishPage() {
   const [dangerCategories, setDangerCategories] = useState<string[]>([]);
   const [bodyShapes, setBodyShapes] = useState<string[]>([]);
   const [migrationCategories, setMigrationCategories] = useState<string[]>([]);
+  const [locations, setLocations] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
   const [fishbaseVersion, setFishbaseVersion] = useState("");
@@ -30,6 +31,7 @@ export default function FishPage() {
   const [dangerous, setDangerous] = useState("");
   const [bodyShape, setBodyShape] = useState("");
   const [migration, setMigration] = useState("");
+  const [location, setLocation] = useState("");
   const [page, setPage] = useState(1);
   const [sortBy, setSortBy] = useState<SortKey>("species");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
@@ -47,6 +49,9 @@ export default function FishPage() {
     fetch(`${API}/fish/migration-categories`)
       .then((r) => r.json())
       .then((d) => setMigrationCategories(d.categories));
+    fetch(`${API}/fish/locations`)
+      .then((r) => r.json())
+      .then((d) => setLocations(d.locations));
   }, []);
 
   const fetchFish = useCallback(async () => {
@@ -62,6 +67,7 @@ export default function FishPage() {
     if (dangerous) params.set("dangerous", dangerous);
     if (bodyShape) params.set("body_shape", bodyShape);
     if (migration) params.set("migration", migration);
+    if (location) params.set("location", location);
     params.set("sort_by", sortBy);
     params.set("sort_dir", sortDir);
     params.set("limit", String(PER_PAGE));
@@ -73,7 +79,7 @@ export default function FishPage() {
     setTotal(data.total);
     setFishbaseVersion(data.fishbase_version);
     setLoading(false);
-  }, [search, genus, habitat, maxLength, dangerous, bodyShape, migration, page, sortBy, sortDir]);
+  }, [search, genus, habitat, maxLength, dangerous, bodyShape, migration, location, page, sortBy, sortDir]);
 
   useEffect(() => {
     fetchFish();
@@ -165,6 +171,15 @@ export default function FishPage() {
         >
           <option value="">Any migration pattern</option>
           {migrationCategories.map((c) => <option key={c} value={c}>{formatLabel(c)}</option>)}
+        </select>
+
+        <select
+          className={`${fieldClass} w-36`}
+          value={location}
+          onChange={handleFilterChange(setLocation)}
+        >
+          <option value="">Any location</option>
+          {locations.map((l) => <option key={l} value={l}>{l}</option>)}
         </select>
 
         {totalPages > 1 && (

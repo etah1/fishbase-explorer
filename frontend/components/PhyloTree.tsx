@@ -2,8 +2,7 @@
 
 import { useEffect, useMemo } from "react";
 import { hierarchy } from "d3-hierarchy";
-import { scaleLinear, scaleOrdinal, scaleSequential } from "d3-scale";
-import { interpolateViridis, schemeTableau10 } from "d3-scale-chromatic";
+import { scaleLinear } from "d3-scale";
 
 export type TreeNode = {
   length: number;
@@ -12,15 +11,63 @@ export type TreeNode = {
   children?: TreeNode[];
 };
 
-const LEAF_HEIGHT = 14;
-const TREE_WIDTH = 1100;
-const LABEL_WIDTH = 320;
-const MARGIN = { top: 16, right: 16, bottom: 16, left: 16 };
-const NO_DATA_COLOR = "#bfdbfe";
+export type ColumnDef = {
+  key: string;
+  label: string;
+  type: "categorical" | "continuous" | "status";
+};
 
 export type LegendItem = { label: string; color: string };
+export type ColumnLegend = { title: string; items: LegendItem[] };
 
-type Positioned = ReturnType<typeof hierarchy<TreeNode>> & { x: number; y: number };
+const LEAF_HEIGHT = 14;
+const TREE_WIDTH = 900;
+const LABEL_WIDTH = 260;
+const COLUMN_WIDTH = 128;
+const HEADER_HEIGHT = 82;
+const MARGIN = { top: 8, right: 16, bottom: 16, left: 16 };
+
+// Stable category colors keep trait colors comparable between filters.
+const CATEGORICAL_PALETTE = [
+  "#2a78d6",
+  "#1baf7a",
+  "#eda100",
+  "#008300",
+  "#4a3aa7",
+  "#e34948",
+  "#e87ba4",
+  "#eb6834",
+];
+const OTHER_COLOR = "#898781";
+const NO_DATA_COLOR = "#e1e0d9";
+const MIXED_BRANCH_COLOR = "#c3c2b7";
+// Continuous traits use one blue ramp from low to high.
+const SEQUENTIAL_STEPS = [
+  "#cde2fb", "#b7d3f6", "#9ec5f4", "#86b6ef", "#6da7ec", "#5598e7", "#3987e5",
+  "#2a78d6", "#256abf", "#1c5cab", "#184f95", "#104281", "#0d366b",
+];
+const BAR_FILL = "#2a78d6";
+
+// IUCN status uses an ordered severity palette.
+const STATUS_COLORS = { good: "#0ca30c", warning: "#fab219", serious: "#ec835a", critical: "#d03b3b" };
+const IUCN_STATUS_BUCKET: Record<string, keyof typeof STATUS_COLORS> = {
+  LC: "good",
+  NT: "warning",
+  VU: "warning",
+  EN: "serious",
+  CR: "critical",
+  EW: "critical",
+  EX: "critical",
+};
+const IUCN_STATUS_LABEL: Record<string, string> = {
+  LC: "Least concern",
+  NT: "Near threatened",
+  VU: "Vulnerable",
+  EN: "Endangered",
+  CR: "Critically endangered",
+  EW: "Extinct in the wild",
+  EX: "Extinct",
+};
 
 export function formatLegendLabel(label: string) {
   return label
@@ -29,21 +76,212 @@ export function formatLegendLabel(label: string) {
     .join(" ");
 }
 
+// Prune to species with all selected traits, then collapse single-child branches.
+export function pruneTree(
+  node: TreeNode,
+  columns: ColumnDef[],
+  excludedNames: ReadonlySet<string> = new Set()
+): TreeNode | null {
+  if (!node.children) {
+    if (node.name && excludedNames.has(node.name)) return null;
+    const hasAllData = columns.every((col) => node.traits?.[col.key] != null);
+    return hasAllData ? node : null;
+  }
+  const prunedChildren = node.children
+    .map((c) => pruneTree(c, columns, excludedNames))
+    .filter((c): c is TreeNode => c !== null);
+  if (prunedChildren.length === 0) return null;
+  if (prunedChildren.length === 1) return prunedChildren[0];
+  return { ...node, children: prunedChildren };
+}
+
+export function collectLeafNames(node: TreeNode, out: string[] = []): string[] {
+  if (!node.children) {
+    if (node.name) out.push(node.name);
+    return out;
+  }
+  for (const child of node.children) collectLeafNames(child, out);
+  return out;
+}
+
+export function countLeaves(node: TreeNode): number {
+  if (!node.children) return 1;
+  return node.children.reduce((sum, c) => sum + countLeaves(c), 0);
+}
+
+// Ladderize branches by descendant count for a steadier visual scan.
+export function ladderizeTree(node: TreeNode): TreeNode {
+  return ladderizeWithCount(node).node;
+}
+
+function ladderizeWithCount(node: TreeNode): { node: TreeNode; count: number } {
+  if (!node.children) return { node, count: 1 };
+  const ranked = node.children.map(ladderizeWithCount).sort((a, b) => a.count - b.count);
+  return {
+    node: { ...node, children: ranked.map((r) => r.node) },
+    count: ranked.reduce((sum, r) => sum + r.count, 0),
+  };
+}
+
+type Positioned = ReturnType<typeof hierarchy<TreeNode>> & {
+  x: number;
+  y: number;
+  subfamily?: string | null;
+};
+
+function wrapColumnLabel(label: string) {
+  const lines: string[] = [];
+  let line = "";
+
+  for (const word of label.split(" ")) {
+    const next = line ? `${line} ${word}` : word;
+    if (next.length <= 15) {
+      line = next;
+    } else {
+      if (line) lines.push(line);
+      line = word;
+    }
+  }
+
+  if (line) lines.push(line);
+  return lines;
+}
+function buildCategoricalScale(leaves: Positioned[], key: string) {
+  const counts = new Map<string, number>();
+  for (const leaf of leaves) {
+    const v = leaf.data.traits?.[key];
+    if (typeof v === "string") counts.set(v, (counts.get(v) ?? 0) + 1);
+  }
+  const ranked = [...counts.entries()].sort(
+    (a, b) => b[1] - a[1] || a[0].localeCompare(b[0])
+  );
+  const top = ranked.slice(0, CATEGORICAL_PALETTE.length).map(([label]) => label);
+  const colorOf = new Map(top.map((label, i) => [label, CATEGORICAL_PALETTE[i]]));
+  const hasOther = ranked.length > top.length;
+
+  const legend: LegendItem[] = top.map((label) => ({
+    label: formatLegendLabel(label),
+    color: colorOf.get(label)!,
+  }));
+  if (hasOther) legend.push({ label: "Other", color: OTHER_COLOR });
+  if (leaves.some((l) => l.data.traits?.[key] == null)) {
+    legend.push({ label: "No data", color: NO_DATA_COLOR });
+  }
+
+  return {
+    colorOf: (v: string | number | null | undefined) => {
+      if (v == null || typeof v !== "string") return NO_DATA_COLOR;
+      return colorOf.get(v) ?? OTHER_COLOR;
+    },
+    legend,
+  };
+}
+
+function buildSequentialScale(leaves: Positioned[], key: string) {
+  const values = leaves
+    .map((l) => l.data.traits?.[key])
+    .filter((v): v is number => typeof v === "number");
+  const min = values.length ? Math.min(...values) : 0;
+  const max = values.length ? Math.max(...values) : 1;
+  const steps = SEQUENTIAL_STEPS.length;
+  const scale = scaleLinear<string>()
+    .domain(Array.from({ length: steps }, (_, i) => min + (i / (steps - 1)) * (max - min || 1)))
+    .range(SEQUENTIAL_STEPS);
+  const barScale = scaleLinear().domain([min, max || 1]).range([4, COLUMN_WIDTH - 16]);
+
+  const legend: LegendItem[] = values.length
+    ? [
+        { label: `low (${min.toFixed(2)})`, color: SEQUENTIAL_STEPS[0] },
+        { label: `high (${max.toFixed(2)})`, color: SEQUENTIAL_STEPS[steps - 1] },
+      ]
+    : [];
+  if (leaves.some((l) => l.data.traits?.[key] == null)) {
+    legend.push({ label: "No data", color: NO_DATA_COLOR });
+  }
+
+  return {
+    barWidth: (v: number | string | null | undefined) =>
+      typeof v === "number" ? barScale(v) : 0,
+    colorOf: (v: number | string | null | undefined) =>
+      typeof v === "number" ? scale(v) : NO_DATA_COLOR,
+    legend,
+  };
+}
+
+function buildStatusScale(leaves: Positioned[], key: string) {
+  const present = new Set<keyof typeof STATUS_COLORS>();
+  for (const leaf of leaves) {
+    const code = leaf.data.traits?.[key];
+    const bucket = typeof code === "string" ? IUCN_STATUS_BUCKET[code] : undefined;
+    if (bucket) present.add(bucket);
+  }
+  const order: (keyof typeof STATUS_COLORS)[] = ["good", "warning", "serious", "critical"];
+  const bucketLabel = { good: "Least/near threatened", warning: "Vulnerable", serious: "Endangered", critical: "Critically endangered/extinct" };
+  const legend: LegendItem[] = order
+    .filter((b) => present.has(b))
+    .map((b) => ({ label: bucketLabel[b], color: STATUS_COLORS[b] }));
+  if (leaves.some((l) => {
+    const code = l.data.traits?.[key];
+    return code == null || typeof code !== "string" || !IUCN_STATUS_BUCKET[code];
+  })) {
+    legend.push({ label: "Not evaluated / data deficient", color: NO_DATA_COLOR });
+  }
+
+  return {
+    colorOf: (v: string | number | null | undefined) => {
+      const bucket = typeof v === "string" ? IUCN_STATUS_BUCKET[v] : undefined;
+      return bucket ? STATUS_COLORS[bucket] : NO_DATA_COLOR;
+    },
+    legend,
+  };
+}
+
+function subfamilyColorScale(leaves: Positioned[]) {
+  const counts = new Map<string, number>();
+  for (const leaf of leaves) {
+    const s = leaf.data.traits?.Subfamily;
+    if (typeof s === "string") counts.set(s, (counts.get(s) ?? 0) + 1);
+  }
+  const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+  const top = ranked.slice(0, CATEGORICAL_PALETTE.length).map(([label]) => label);
+  const colorOf = new Map(top.map((label, i) => [label, CATEGORICAL_PALETTE[i]]));
+  const legend: LegendItem[] = top.map((label) => ({ label, color: colorOf.get(label)! }));
+  if (ranked.length > top.length) legend.push({ label: "Other subfamily", color: OTHER_COLOR });
+  return {
+    colorOf: (s: string | null | undefined) => (s ? colorOf.get(s) ?? OTHER_COLOR : null),
+    legend,
+  };
+}
 
 export default function PhyloTree({
   data,
-  trait,
-  isContinuous,
+  columns,
+  excludedNames,
   onLegendChange,
+  onLeafCountChange,
 }: {
   data: TreeNode;
-  trait: string;
-  isContinuous: boolean;
-  onLegendChange?: (legend: LegendItem[]) => void;
+  columns: ColumnDef[];
+  excludedNames?: ReadonlySet<string>;
+  onLegendChange?: (legends: ColumnLegend[]) => void;
+  onLeafCountChange?: (count: number) => void;
 }) {
-  const root = useMemo(() => hierarchy(data, (d) => d.children), [data]);
+  const prunedData = useMemo(() => {
+    const pruned = pruneTree(data, columns, excludedNames);
+    return pruned && ladderizeTree(pruned);
+  }, [data, columns, excludedNames]);
 
-  const { nodes, links, xScale, height, colorOf, legend } = useMemo(() => {
+  useEffect(() => {
+    onLeafCountChange?.(prunedData ? countLeaves(prunedData) : 0);
+  }, [prunedData, onLeafCountChange]);
+
+  // Keep hook order stable even when filters remove every species.
+  const root = useMemo(
+    () => hierarchy(prunedData ?? data, (d) => d.children),
+    [prunedData, data]
+  );
+
+  const { nodes, links, xScale, height, columnRenderers, legends, subfamilyColorOf } = useMemo(() => {
     const nodes = root.descendants() as Positioned[];
     const leaves = root.leaves() as Positioned[];
 
@@ -61,103 +299,168 @@ export default function PhyloTree({
       }
     });
 
+    const { colorOf: subfamilyColorOf, legend: subfamilyLegend } = subfamilyColorScale(leaves);
+    root.eachAfter((d) => {
+      const node = d as Positioned;
+      if (!node.children) {
+        node.subfamily = (node.data.traits?.Subfamily as string | undefined) ?? null;
+        return;
+      }
+      const childSubfamilies = new Set(
+        (node.children as Positioned[]).map((c) => c.subfamily)
+      );
+      node.subfamily = childSubfamilies.size === 1 ? [...childSubfamilies][0] : null;
+    });
+
     const maxX = Math.max(...leaves.map((d) => d.x));
     const xScale = scaleLinear().domain([0, maxX || 1]).range([0, TREE_WIDTH]);
     const links = root.links() as { source: Positioned; target: Positioned }[];
     const height = leaves.length * LEAF_HEIGHT;
 
-    let colorOf: (leaf: Positioned) => string;
-    let legend: LegendItem[];
+    const legends: ColumnLegend[] = [{ title: "Subfamily (branch color)", items: subfamilyLegend }];
+    const columnRenderers = columns.map((col) => {
+      if (col.type === "continuous") {
+        const scale = buildSequentialScale(leaves, col.key);
+        legends.push({ title: col.label, items: scale.legend });
+        return { col, kind: "continuous" as const, scale };
+      }
+      if (col.type === "status") {
+        const scale = buildStatusScale(leaves, col.key);
+        legends.push({ title: col.label, items: scale.legend });
+        return { col, kind: "status" as const, scale };
+      }
+      const scale = buildCategoricalScale(leaves, col.key);
+      legends.push({ title: col.label, items: scale.legend });
+      return { col, kind: "categorical" as const, scale };
+    });
 
-    const hasMissing = leaves.some((d) => d.data.traits?.[trait] == null);
-
-    if (isContinuous) {
-      const values = leaves
-        .map((d) => d.data.traits?.[trait])
-        .filter((v): v is number => typeof v === "number");
-      const scale = scaleSequential(interpolateViridis).domain([
-        Math.min(...values),
-        Math.max(...values),
-      ]);
-      colorOf = (leaf) => {
-        const v = leaf.data.traits?.[trait];
-        return typeof v === "number" ? scale(v) : NO_DATA_COLOR;
-      };
-      legend = values.length
-        ? [
-            { label: `low (${Math.min(...values).toFixed(2)})`, color: scale(Math.min(...values)) },
-            { label: `high (${Math.max(...values).toFixed(2)})`, color: scale(Math.max(...values)) },
-          ]
-        : [];
-    } else {
-      const categories = Array.from(
-        new Set(
-          leaves
-            .map((d) => d.data.traits?.[trait])
-            .filter((v): v is string => typeof v === "string")
-        )
-      ).sort();
-      const scale = scaleOrdinal<string, string>().domain(categories).range(schemeTableau10 as string[]);
-      colorOf = (leaf) => {
-        const v = leaf.data.traits?.[trait];
-        return typeof v === "string" ? scale(v) : NO_DATA_COLOR;
-      };
-      legend = categories.map((c) => ({ label: c, color: scale(c) }));
-    }
-    if (hasMissing) legend.push({ label: "no data", color: NO_DATA_COLOR });
-
-    return { nodes, links, xScale, height, colorOf, legend };
-  }, [root, trait, isContinuous]);
+    return {
+      nodes,
+      links,
+      xScale,
+      height,
+      columnRenderers,
+      legends,
+      subfamilyColorOf,
+    };
+  }, [root, columns]);
 
   useEffect(() => {
-    onLegendChange?.(legend);
-  }, [legend, onLegendChange]);
+    onLegendChange?.(legends);
+  }, [legends, onLegendChange]);
 
-  const width = MARGIN.left + TREE_WIDTH + LABEL_WIDTH + MARGIN.right;
-  const svgHeight = MARGIN.top + height + MARGIN.bottom;
+  const treeAreaWidth = TREE_WIDTH + LABEL_WIDTH;
+  const columnsWidth = columns.length * COLUMN_WIDTH;
+  const width = MARGIN.left + treeAreaWidth + columnsWidth + MARGIN.right;
+  const svgHeight = MARGIN.top + HEADER_HEIGHT + height + MARGIN.bottom;
+
+  if (!prunedData) {
+    return (
+      <p className="py-12 text-center text-black">
+        No species are left to show. Try unchecking a filter or removing an excluded species.
+      </p>
+    );
+  }
 
   return (
-    <div>
-      <div className="phylo-tree w-full overflow-auto rounded-lg border border-blue-100 bg-white shadow-sm" style={{ maxHeight: "75vh" }}>
-        <svg width={width} height={svgHeight}>
-          <g transform={`translate(${MARGIN.left},${MARGIN.top})`}>
-            {links.map((link, i) => {
-              const sx = xScale(link.source.x);
-              const sy = link.source.y;
-              const tx = xScale(link.target.x);
-              const ty = link.target.y;
-              return (
-                <path
-                  key={i}
-                  d={`M${sx},${sy} L${sx},${ty} L${tx},${ty}`}
-                  fill="none"
-                  stroke="#93c5fd"
-                  strokeWidth={1}
-                />
-              );
-            })}
-            {nodes
-              .filter((d) => !d.children)
-              .map((leaf) => (
-                <g key={leaf.data.name} transform={`translate(${xScale(leaf.x)},${leaf.y})`}>
-                  <circle r={3.5} fill={colorOf(leaf)} stroke="#1d4ed8" strokeWidth={0.5} />
-                  <text
-                    x={7}
-                    dy="0.32em"
-                    fontSize={10}
-                    fontStyle="italic"
-                    fill="#1e3a8a"
-                  >
+    <div className="phylo-tree w-full overflow-auto rounded-lg border border-blue-100 bg-white shadow-sm" style={{ maxHeight: "75vh" }}>
+      <svg width={width} height={svgHeight} viewBox={`0 0 ${width} ${svgHeight}`} preserveAspectRatio="xMinYMin meet">
+        <g transform={`translate(${MARGIN.left},${MARGIN.top + HEADER_HEIGHT})`}>
+          {links.map((link, i) => {
+            const sx = xScale(link.source.x);
+            const sy = link.source.y;
+            const tx = xScale(link.target.x);
+            const ty = link.target.y;
+            const target = link.target as Positioned;
+            const stroke = target.subfamily ? subfamilyColorOf(target.subfamily) : null;
+            return (
+              <path
+                key={i}
+                d={`M${sx},${sy} L${sx},${ty} L${tx},${ty}`}
+                fill="none"
+                stroke={stroke ?? MIXED_BRANCH_COLOR}
+                strokeWidth={1.5}
+              />
+            );
+          })}
+          {nodes
+            .filter((d) => !d.children)
+            .map((leaf) => (
+              <g key={leaf.data.name}>
+                <g transform={`translate(${xScale(leaf.x)},${leaf.y})`}>
+                  <circle
+                    r={4}
+                    fill={(leaf.subfamily && subfamilyColorOf(leaf.subfamily)) || OTHER_COLOR}
+                    stroke="#fcfcfb"
+                    strokeWidth={2}
+                  />
+                  <text x={9} dy="0.32em" fontSize={10} fontStyle="italic" fill="#0b0b0b">
                     {leaf.data.name?.replace("_", " ")}
                   </text>
                 </g>
-              ))}
-          </g>
-        </svg>
-      </div>
+                {columnRenderers.map((renderer, ci) => {
+                  const cx = LABEL_WIDTH + ci * COLUMN_WIDTH;
+                  const value = leaf.data.traits?.[renderer.col.key];
+                  if (renderer.kind === "continuous") {
+                    const w = renderer.scale.barWidth(value);
+                    return (
+                      <g key={renderer.col.key} transform={`translate(${TREE_WIDTH + cx},${leaf.y})`}>
+                        <title>{`${leaf.data.name?.replace("_", " ")}: ${renderer.col.label} = ${value ?? "no data"}`}</title>
+                        {w > 0 ? (
+                          <rect x={4} y={-5} width={w} height={10} rx={4} fill={BAR_FILL} />
+                        ) : (
+                          <rect x={4} y={-1} width={10} height={2} fill={NO_DATA_COLOR} />
+                        )}
+                      </g>
+                    );
+                  }
+                  const color = renderer.scale.colorOf(value);
+                  const displayValue =
+                    renderer.kind === "status" && typeof value === "string"
+                      ? IUCN_STATUS_LABEL[value] ?? value
+                      : value;
+                  return (
+                    <g key={renderer.col.key} transform={`translate(${TREE_WIDTH + cx + COLUMN_WIDTH / 2},${leaf.y})`}>
+                      <title>{`${leaf.data.name?.replace("_", " ")}: ${renderer.col.label} = ${displayValue ?? "no data"}`}</title>
+                      <rect x={-14} y={-6} width={28} height={12} rx={3} fill={color} />
+                    </g>
+                  );
+                })}
+              </g>
+            ))}
+        </g>
+        <g transform={`translate(${MARGIN.left},${MARGIN.top})`}>
+          {columnRenderers.map((renderer, ci) => {
+            const x = TREE_WIDTH + LABEL_WIDTH + ci * COLUMN_WIDTH + COLUMN_WIDTH / 2;
+            const lines = wrapColumnLabel(renderer.col.label);
+
+            return (
+              <text
+                key={renderer.col.key}
+                x={x}
+                y={18}
+                fontSize={10}
+                fontWeight={600}
+                fill="#0b0b0b"
+                textAnchor="middle"
+              >
+                {lines.map((line, index) => (
+                  <tspan key={line} x={x} dy={index === 0 ? 0 : 12}>
+                    {line}
+                  </tspan>
+                ))}
+              </text>
+            );
+          })}
+        </g>
+      </svg>
     </div>
   );
 }
+
+
+
+
 
 
 

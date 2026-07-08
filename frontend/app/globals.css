@@ -50,13 +50,53 @@ html.dark .bottom-blue-divider {
   border-color: #ffe7ba;
 }
 
-html.dark .phylo-tree path { stroke: #6c3a02; }
-html.dark .phylo-tree text { fill: #000; }
-html.dark .phylo-tree circle { stroke: #6c3a02; filter: invert(1); }
-html.dark .legend-color { filter: invert(1); }
+html.dark body:has(.phylo-page) > main {
+  filter: none;
+}
 
-/* Table dark mode: parent invert(1) gives black bg and white text.
-   Blue accents use pre-inverted values so they land on dark navy after inversion. */
+html.dark .phylo-page,
+html.dark .phylo-page .no-print > span,
+html.dark .phylo-page .bottom-blue-divider,
+html.dark .phylo-page .bottom-blue-divider a {
+  color: #fff;
+}
+
+html.dark .phylo-page .phylo-legend,
+html.dark .phylo-page .phylo-tree {
+  background: #000;
+  border-color: #9fd1ff;
+  color: #fff;
+  filter: none;
+}
+
+html.dark .phylo-page .phylo-tree text {
+  fill: #fff;
+}
+
+html.dark .phylo-page .phylo-tree circle {
+  stroke: #000;
+}
+
+html.dark .phylo-page .phylo-legend [style*="background-color"] {
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+html.dark .phylo-page .no-print button,
+html.dark .phylo-page .no-print input,
+html.dark .phylo-page .no-print label,
+html.dark .phylo-page .no-print [class*="bg-white"] {
+  background-color: #000;
+  border-color: #fff;
+  color: #fff;
+  filter: none;
+}
+
+html.dark .phylo-page .no-print button:hover,
+html.dark .phylo-page .no-print label:hover {
+  background-color: #fff;
+  color: #000;
+}
+
 html.dark .light-surface .bg-blue-50 { background-color: #ffedcd; }
 html.dark .light-surface .text-blue-900 { color: #000; }
 html.dark .light-surface tbody tr { border-color: #ffe7ba; }
@@ -97,4 +137,82 @@ body > * {
     transform: translate(-50%, -50%) scale(1.1);
   }
 }
+@media print {
+  @page {
+    size: landscape;
+    margin: 0.35in;
+  }
+
+  html,
+  body {
+    background: #fff !important;
+  }
+
+  body::before,
+  .no-print,
+  nav {
+    display: none !important;
+  }
+
+  body > * {
+    filter: none !important;
+  }
+
+  body * {
+    visibility: hidden;
+  }
+
+  .print-area,
+  .print-area * {
+    visibility: visible;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+
+  .print-area {
+    left: 0;
+    position: absolute;
+    top: 0;
+    width: 100%;
+  }
+
+  .print-area > .mb-4 {
+    margin-bottom: 0.12in !important;
+    padding: 0.08in !important;
+  }
+
+  .print-area > p {
+    margin-top: 0.12in !important;
+    padding-top: 0.08in !important;
+  }
+
+  .phylo-tree {
+    border: 0 !important;
+    box-shadow: none !important;
+    height: 6.25in !important;
+    max-height: none !important;
+    overflow: visible !important;
+    width: 100% !important;
+  }
+
+  .phylo-tree svg {
+    display: block;
+    height: 100% !important;
+    max-width: none !important;
+    width: 100% !important;
+  }
+
+  .phylo-tree svg *,
+  .print-area [style*="background-color"] {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+}
+
+
+
+
+
 

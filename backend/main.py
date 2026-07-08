@@ -47,6 +47,7 @@ def _sort_fish(df, sort_by: str, sort_dir: str):
         "dangerous": (["Dangerous"], "text"),
         "body_shape": (["BodyShapeI"], "text"),
         "migration": (["AnaCat"], "text"),
+        "location": (["Continent", "Country"], "text"),
     }
     by, kind = sort_map.get(sort_by, sort_map["species"])
     df = df.copy()
@@ -71,6 +72,7 @@ async def get_fish(
     dangerous: str = Query(None),
     body_shape: str = Query(None),
     migration: str = Query(None),
+    location: str = Query(None),
     sort_by: str = Query("species"),
     sort_dir: str = Query("asc"),
     limit: int = Query(50),
@@ -108,6 +110,12 @@ async def get_fish(
         df = df[df["BodyShapeI"] == body_shape]
     if migration:
         df = df[df["AnaCat"] == migration]
+    if location:
+        if location.startswith("Lake "):
+            name = location.removeprefix("Lake ")
+            df = df[df["Lake"].fillna("").str.contains(name, regex=False)]
+        else:
+            df = df[df["Continent"].fillna("").str.contains(location, regex=False)]
 
     df = _sort_fish(df, sort_by, sort_dir)
 
@@ -149,6 +157,13 @@ async def get_migration_categories():
     async with httpx.AsyncClient(timeout=15) as client:
         categories = await fishbase_data.get_migration_categories(client)
     return {"categories": categories}
+
+
+@app.get("/fish/locations")
+async def get_locations():
+    async with httpx.AsyncClient(timeout=15) as client:
+        locations = await fishbase_data.get_locations(client)
+    return {"locations": locations}
 
 
 @app.get("/fish/tree")
