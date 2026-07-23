@@ -12,16 +12,16 @@ type MultiSelectDropdownProps = {
   className?: string;
   searchable?: boolean;
   searchPlaceholder?: string;
+  showSelectAll?: boolean;
 };
 
 const MAX_VISIBLE_OPTIONS = 50;
 
-// Match the first letters of each word, not arbitrary middle letters.
+// Match each term against a word start to support abbreviated and complete names.
 function matchesWordStart(label: string, query: string): boolean {
-  return label
-    .toLowerCase()
-    .split(/\s+/)
-    .some((word) => word.startsWith(query));
+  const words = label.toLowerCase().split(/\s+/);
+  const terms = query.split(/\s+/);
+  return terms.every((term) => words.some((word) => word.startsWith(term)));
 }
 
 export default function MultiSelectDropdown({
@@ -32,6 +32,7 @@ export default function MultiSelectDropdown({
   className,
   searchable = false,
   searchPlaceholder = "Type to search...",
+  showSelectAll = false,
 }: MultiSelectDropdownProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -80,10 +81,11 @@ export default function MultiSelectDropdown({
     if (!searchable) return options;
     return trimmedQuery
       ? options.filter((o) => matchesWordStart(o.label, trimmedQuery))
-      : options.filter((o) => selected.includes(o.key));
-  }, [searchable, options, trimmedQuery, selected]);
+      : options;
+  }, [searchable, options, trimmedQuery]);
   const visibleOptions = matchedOptions.slice(0, MAX_VISIBLE_OPTIONS);
   const truncated = searchable && matchedOptions.length > MAX_VISIBLE_OPTIONS;
+  const allSelected = options.length > 0 && options.every((option) => selected.includes(option.key));
 
   return (
     <div ref={rootRef} className={`relative inline-block ${className ?? ""}`}>
@@ -116,6 +118,15 @@ export default function MultiSelectDropdown({
               placeholder={searchPlaceholder}
               className="mb-1 h-7 w-full rounded-md border border-black px-2 text-xs text-black placeholder:text-slate-500 focus:outline-none"
             />
+          )}
+          {showSelectAll && options.length > 0 && (
+            <button
+              type="button"
+              onClick={() => onChange(allSelected ? [] : options.map((option) => option.key))}
+              className="mb-1 w-full rounded-md px-2 py-1.5 text-left text-xs font-semibold text-black hover:bg-blue-50"
+            >
+              {allSelected ? "Clear all" : "Select all"}
+            </button>
           )}
           <div className="max-h-64 overflow-y-auto">
             {visibleOptions.map((option) => (

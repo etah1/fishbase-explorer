@@ -4,3 +4,5 @@ httpx
 duckdb
 pandas
 dendropy
+supabase
+python-dotenv

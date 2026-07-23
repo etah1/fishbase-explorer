@@ -1,3 +1,8 @@
+"use client";
+
+import { useState } from "react";
+import ContributionDetails, { type CommunityContribution } from "@/components/ContributionDetails";
+
 type Fish = {
   SpecCode: number;
   Genus: string;
@@ -13,6 +18,7 @@ type Fish = {
   Country: string | null;
   Continent: string | null;
   Lake: string | null;
+  _CommunityContributions?: CommunityContribution[] | null;
 };
 
 export type SortKey =
@@ -56,12 +62,15 @@ function formatLocation(f: Fish) {
 }
 
 export default function FishTable({ fish, onSort }: FishTableProps) {
+  const [selectedFish, setSelectedFish] = useState<Fish | null>(null);
+
   if (fish.length === 0) {
     return <p className="py-12 text-center text-blue-300">No cichlids matched your filters.</p>;
   }
 
   return (
-    <div className="light-surface w-full overflow-x-auto rounded-lg border border-blue-100 bg-white shadow-sm">
+    <>
+      <div className="light-surface w-full overflow-x-auto rounded-lg border border-blue-100 bg-white shadow-sm">
       <table className="w-full text-sm">
         <thead className="bg-blue-50 text-left text-blue-900">
           <tr>
@@ -81,7 +90,15 @@ export default function FishTable({ fish, onSort }: FishTableProps) {
         <tbody className="divide-y divide-blue-50">
           {fish.map((f) => (
             <tr key={f.SpecCode} className="transition-colors hover:bg-blue-50">
-              <td className="px-4 py-3 italic text-black">{f.Genus} {f.Species}</td>
+              <td className="px-4 py-3 italic text-black">
+                <button
+                  type="button"
+                  onClick={() => setSelectedFish(f)}
+                  className="cursor-pointer italic underline decoration-dotted underline-offset-2 transition-colors hover:text-[#1b7cb2] focus:text-[#1b7cb2] focus:outline-none"
+                >
+                  {f.Genus} {f.Species}
+                </button>
+              </td>
               <td className="px-4 py-3 text-black">{f.FBname ?? "-"}</td>
               <td className="px-4 py-3 text-black">
                 {[f.Fresh && "Fresh", f.Saltwater && "Salt", f.Brackish && "Brackish"]
@@ -96,6 +113,15 @@ export default function FishTable({ fish, onSort }: FishTableProps) {
           ))}
         </tbody>
       </table>
-    </div>
+      </div>
+      {selectedFish ? (
+        <ContributionDetails
+          genus={selectedFish.Genus}
+          species={selectedFish.Species}
+          contributions={selectedFish._CommunityContributions ?? []}
+          onClose={() => setSelectedFish(null)}
+        />
+      ) : null}
+    </>
   );
 }

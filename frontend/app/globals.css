@@ -37,6 +37,22 @@ html.dark input {
   filter: invert(1);
 }
 
+/* Keep the modal backdrop uninverted and invert only its dialog. */
+html.dark .modal-overlay {
+  filter: none;
+}
+
+html.dark .modal-overlay > section {
+  filter: invert(1);
+}
+
+/* Preserve semantic red and green colors inside inverted dialogs. */
+html.dark .modal-overlay [class*="bg-red-"],
+html.dark .modal-overlay [class*="text-red-"],
+html.dark .modal-overlay [class*="text-green-"] {
+  filter: invert(1);
+}
+
 html.dark .brand-logo {
   filter: invert(1);
 }
@@ -127,6 +143,12 @@ body > * {
   z-index: 1;
 }
 
+.modal-overlay {
+  inset: 0 !important;
+  position: fixed !important;
+  z-index: 9999 !important;
+}
+
 @keyframes ball-pulse {
   0%, 100% {
     filter: blur(60px);
@@ -210,7 +232,6 @@ body > * {
     color-adjust: exact !important;
   }
 }
-
 
 
 

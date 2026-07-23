@@ -19,6 +19,12 @@ _lock = asyncio.Lock()
 _cache: dict = {"fish_version": None, "newick": None, "trees": {}}
 
 
+async def invalidate_trait_cache() -> None:
+    """Rebuild trait-decorated trees without refetching the topology backbone."""
+    async with _lock:
+        _cache["trees"] = {}
+
+
 def _clean(value):
     if isinstance(value, float) and value != value:
         return None
@@ -30,7 +36,11 @@ def _node_to_dict(node, traits_by_name):
     if node.is_leaf() and node.taxon:
         name = node.taxon.label
         out["name"] = name
-        out["traits"] = traits_by_name.get(name, {})
+        traits = traits_by_name.get(name, {})
+        out["traits"] = {
+            key: value for key, value in traits.items() if key != "_CommunityContributions"
+        }
+        out["contributions"] = traits.get("_CommunityContributions") or []
     children = node.child_nodes()
     if children:
         out["children"] = [_node_to_dict(c, traits_by_name) for c in children]
@@ -169,10 +179,10 @@ async def get_cichlid_tree(client: httpx.AsyncClient, trait: str | None = None):
 
     traits_by_name = {
         f"{row['Genus']}_{row['Species']}": {
-            field: _clean(row[field])
+            field: _clean(row.get(field))
             for field in fishbase_data.TRAIT_FIELDS
             + ["Encephalization", "Subfamily", "Country", "Continent", "Lake",
-               "IUCN_Code", "GrowthRate"]
+               "IUCN_Code", "GrowthRate", "_CommunityContributions"]
         }
         for row in df.to_dict(orient="records")
     }

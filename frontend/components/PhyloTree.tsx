@@ -1,13 +1,16 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { hierarchy } from "d3-hierarchy";
 import { scaleLinear } from "d3-scale";
+import ContributionDetails, { type CommunityContribution } from "@/components/ContributionDetails";
+import { formatTraitValue } from "@/utils/traitLabels";
 
 export type TreeNode = {
   length: number;
   name?: string;
   traits?: Record<string, string | number | null>;
+  contributions?: CommunityContribution[];
   children?: TreeNode[];
 };
 
@@ -70,10 +73,7 @@ const IUCN_STATUS_LABEL: Record<string, string> = {
 };
 
 export function formatLegendLabel(label: string) {
-  return label
-    .split(" ")
-    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-    .join(" ");
+  return label ? label.charAt(0).toUpperCase() + label.slice(1) : label;
 }
 
 // Prune to species with all selected traits, then collapse single-child branches.
@@ -157,13 +157,11 @@ function buildCategoricalScale(leaves: Positioned[], key: string) {
   );
   const top = ranked.slice(0, CATEGORICAL_PALETTE.length).map(([label]) => label);
   const colorOf = new Map(top.map((label, i) => [label, CATEGORICAL_PALETTE[i]]));
-  const hasOther = ranked.length > top.length;
 
-  const legend: LegendItem[] = top.map((label) => ({
-    label: formatLegendLabel(label),
-    color: colorOf.get(label)!,
+  const legend: LegendItem[] = ranked.map(([label]) => ({
+    label: formatTraitValue(key, label),
+    color: colorOf.get(label) ?? OTHER_COLOR,
   }));
-  if (hasOther) legend.push({ label: "Other", color: OTHER_COLOR });
   if (leaves.some((l) => l.data.traits?.[key] == null)) {
     legend.push({ label: "No data", color: NO_DATA_COLOR });
   }
@@ -245,8 +243,10 @@ function subfamilyColorScale(leaves: Positioned[]) {
   const ranked = [...counts.entries()].sort((a, b) => b[1] - a[1]);
   const top = ranked.slice(0, CATEGORICAL_PALETTE.length).map(([label]) => label);
   const colorOf = new Map(top.map((label, i) => [label, CATEGORICAL_PALETTE[i]]));
-  const legend: LegendItem[] = top.map((label) => ({ label, color: colorOf.get(label)! }));
-  if (ranked.length > top.length) legend.push({ label: "Other subfamily", color: OTHER_COLOR });
+  const legend: LegendItem[] = ranked.map(([label]) => ({
+    label,
+    color: colorOf.get(label) ?? OTHER_COLOR,
+  }));
   return {
     colorOf: (s: string | null | undefined) => (s ? colorOf.get(s) ?? OTHER_COLOR : null),
     legend,
@@ -256,16 +256,21 @@ function subfamilyColorScale(leaves: Positioned[]) {
 export default function PhyloTree({
   data,
   columns,
+  legendColumns = columns,
   excludedNames,
   onLegendChange,
+  onSelectedLegendChange,
   onLeafCountChange,
 }: {
   data: TreeNode;
   columns: ColumnDef[];
+  legendColumns?: ColumnDef[];
   excludedNames?: ReadonlySet<string>;
   onLegendChange?: (legends: ColumnLegend[]) => void;
+  onSelectedLegendChange?: (legends: ColumnLegend[]) => void;
   onLeafCountChange?: (count: number) => void;
 }) {
+  const [selectedLeaf, setSelectedLeaf] = useState<TreeNode | null>(null);
   const prunedData = useMemo(() => {
     const pruned = pruneTree(data, columns, excludedNames);
     return pruned && ladderizeTree(pruned);
@@ -281,7 +286,7 @@ export default function PhyloTree({
     [prunedData, data]
   );
 
-  const { nodes, links, xScale, height, columnRenderers, legends, subfamilyColorOf } = useMemo(() => {
+  const { nodes, links, xScale, height, columnRenderers, legends, selectedLegends, subfamilyColorOf } = useMemo(() => {
     const nodes = root.descendants() as Positioned[];
     const leaves = root.leaves() as Positioned[];
 
@@ -317,22 +322,34 @@ export default function PhyloTree({
     const links = root.links() as { source: Positioned; target: Positioned }[];
     const height = leaves.length * LEAF_HEIGHT;
 
-    const legends: ColumnLegend[] = [{ title: "Subfamily (branch color)", items: subfamilyLegend }];
-    const columnRenderers = columns.map((col) => {
+    function buildColumnRenderer(col: ColumnDef) {
       if (col.type === "continuous") {
         const scale = buildSequentialScale(leaves, col.key);
-        legends.push({ title: col.label, items: scale.legend });
         return { col, kind: "continuous" as const, scale };
       }
       if (col.type === "status") {
         const scale = buildStatusScale(leaves, col.key);
-        legends.push({ title: col.label, items: scale.legend });
         return { col, kind: "status" as const, scale };
       }
       const scale = buildCategoricalScale(leaves, col.key);
-      legends.push({ title: col.label, items: scale.legend });
       return { col, kind: "categorical" as const, scale };
-    });
+    }
+
+    const columnRenderers = columns.map(buildColumnRenderer);
+    const legends: ColumnLegend[] = [
+      { title: "Subfamily (branch color)", items: subfamilyLegend },
+      ...legendColumns.map((col) => {
+        const renderer = buildColumnRenderer(col);
+        return { title: col.label, items: renderer.scale.legend };
+      }),
+    ];
+    const selectedLegends: ColumnLegend[] = [
+      { title: "Subfamily (branch color)", items: subfamilyLegend },
+      ...columnRenderers.map((renderer) => ({
+        title: renderer.col.label,
+        items: renderer.scale.legend,
+      })),
+    ];
 
     return {
       nodes,
@@ -341,13 +358,18 @@ export default function PhyloTree({
       height,
       columnRenderers,
       legends,
+      selectedLegends,
       subfamilyColorOf,
     };
-  }, [root, columns]);
+  }, [root, columns, legendColumns]);
 
   useEffect(() => {
     onLegendChange?.(legends);
   }, [legends, onLegendChange]);
+
+  useEffect(() => {
+    onSelectedLegendChange?.(selectedLegends);
+  }, [selectedLegends, onSelectedLegendChange]);
 
   const treeAreaWidth = TREE_WIDTH + LABEL_WIDTH;
   const columnsWidth = columns.length * COLUMN_WIDTH;
@@ -363,7 +385,8 @@ export default function PhyloTree({
   }
 
   return (
-    <div className="phylo-tree w-full overflow-auto rounded-lg border border-blue-100 bg-white shadow-sm" style={{ maxHeight: "75vh" }}>
+    <>
+      <div className="phylo-tree w-full overflow-auto rounded-lg border border-blue-100 bg-white shadow-sm" style={{ maxHeight: "75vh" }}>
       <svg width={width} height={svgHeight} viewBox={`0 0 ${width} ${svgHeight}`} preserveAspectRatio="xMinYMin meet">
         <g transform={`translate(${MARGIN.left},${MARGIN.top + HEADER_HEIGHT})`}>
           {links.map((link, i) => {
@@ -394,7 +417,23 @@ export default function PhyloTree({
                     stroke="#fcfcfb"
                     strokeWidth={2}
                   />
-                  <text x={9} dy="0.32em" fontSize={10} fontStyle="italic" fill="#0b0b0b">
+                  <text
+                    x={9}
+                    dy="0.32em"
+                    fontSize={10}
+                    fontStyle="italic"
+                    fill="#0b0b0b"
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedLeaf(leaf.data)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setSelectedLeaf(leaf.data);
+                      }
+                    }}
+                    className="cursor-pointer transition-colors hover:fill-[#1b7cb2] focus:fill-[#1b7cb2] focus:outline-none"
+                  >
                     {leaf.data.name?.replace("_", " ")}
                   </text>
                 </g>
@@ -405,7 +444,7 @@ export default function PhyloTree({
                     const w = renderer.scale.barWidth(value);
                     return (
                       <g key={renderer.col.key} transform={`translate(${TREE_WIDTH + cx},${leaf.y})`}>
-                        <title>{`${leaf.data.name?.replace("_", " ")}: ${renderer.col.label} = ${value ?? "no data"}`}</title>
+                        <title>{`${leaf.data.name?.replace("_", " ")}: ${renderer.col.label} = ${formatTraitValue(renderer.col.key, value)}`}</title>
                         {w > 0 ? (
                           <rect x={4} y={-5} width={w} height={10} rx={4} fill={BAR_FILL} />
                         ) : (
@@ -418,7 +457,7 @@ export default function PhyloTree({
                   const displayValue =
                     renderer.kind === "status" && typeof value === "string"
                       ? IUCN_STATUS_LABEL[value] ?? value
-                      : value;
+                      : formatTraitValue(renderer.col.key, value);
                   return (
                     <g key={renderer.col.key} transform={`translate(${TREE_WIDTH + cx + COLUMN_WIDTH / 2},${leaf.y})`}>
                       <title>{`${leaf.data.name?.replace("_", " ")}: ${renderer.col.label} = ${displayValue ?? "no data"}`}</title>
@@ -454,7 +493,16 @@ export default function PhyloTree({
           })}
         </g>
       </svg>
-    </div>
+      </div>
+      {selectedLeaf ? (
+        <ContributionDetails
+          genus={(selectedLeaf.name ?? "").slice(0, (selectedLeaf.name ?? "").indexOf("_"))}
+          species={(selectedLeaf.name ?? "").slice((selectedLeaf.name ?? "").indexOf("_") + 1)}
+          contributions={selectedLeaf.contributions ?? []}
+          onClose={() => setSelectedLeaf(null)}
+        />
+      ) : null}
+    </>
   );
 }
 

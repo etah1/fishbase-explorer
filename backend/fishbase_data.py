@@ -7,6 +7,9 @@ import xml.etree.ElementTree as ET
 
 import duckdb
 import httpx
+import pandas as pd
+
+import submissions
 
 BUCKET = "us-west-2.opendata.source.coop"
 PREFIX = "cboettig/fishbase/fb/"
@@ -17,13 +20,38 @@ _S3_NS = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
 _VERSION_RE = re.compile(r"v(\d+\.\d+)/$")
 
 TRAIT_FIELDS = ["Fertilization", "ParentalCare", "RepGuild1", "RepGuild2", "MatingSystem", "FeedingType"]
+ADMIN_EDITABLE_FIELDS = [
+    {"key": "FBname", "label": "Common name", "type": "text"},
+    {"key": "Family", "label": "Family", "type": "text"},
+    {"key": "Subfamily", "label": "Subfamily", "type": "text"},
+    {"key": "Fresh", "label": "Freshwater (0 or 1)", "type": "integer"},
+    {"key": "Brackish", "label": "Brackish (0 or 1)", "type": "integer"},
+    {"key": "Saltwater", "label": "Saltwater (0 or 1)", "type": "integer"},
+    {"key": "Length", "label": "Maximum length (cm)", "type": "number"},
+    {"key": "Dangerous", "label": "Dangerous", "type": "text"},
+    {"key": "BodyShapeI", "label": "Body shape", "type": "text"},
+    {"key": "AnaCat", "label": "Migration", "type": "text"},
+    {"key": "Fertilization", "label": "Fertilization site", "type": "text"},
+    {"key": "ParentalCare", "label": "Which parent provides care", "type": "text"},
+    {"key": "RepGuild1", "label": "Broad care strategy", "type": "text"},
+    {"key": "RepGuild2", "label": "Specific egg or young care method", "type": "text"},
+    {"key": "MatingSystem", "label": "Mating system", "type": "text"},
+    {"key": "FeedingType", "label": "Diet", "type": "text"},
+    {"key": "Encephalization", "label": "Brain size (relative to body)", "type": "number"},
+    {"key": "Country", "label": "Country", "type": "text"},
+    {"key": "Continent", "label": "Continent", "type": "text"},
+    {"key": "Lake", "label": "Lake", "type": "text"},
+    {"key": "IUCN_Code", "label": "Conservation status", "type": "text"},
+    {"key": "GrowthRate", "label": "Growth rate (K)", "type": "number"},
+]
+_ADMIN_FIELD_TYPES = {field["key"]: field["type"] for field in ADMIN_EDITABLE_FIELDS}
 VERSION_CHECK_TTL_SECONDS = 60 * 60
 
 _lock = asyncio.Lock()
 _cache: dict = {
     "version": None,
     "version_checked_at": 0.0,
-    "species": None,
+    "species_base": None,
     "dangerous_categories": None,
     "genera": None,
     "body_shapes": None,
@@ -138,6 +166,79 @@ def _load_species(version: str):
     return df
 
 
+def _apply_community_submissions(df):
+    """Gap-fill only: approved community values never overwrite FishBase's own,
+    and are tagged with a `{field}_CommunitySource` citation so callers can
+    distinguish them rather than silently blending them in."""
+    try:
+        approved = submissions.list_approved_submissions()
+    except Exception:
+        return df
+    if approved.empty:
+        return df
+
+    df = df.copy()
+    df["_CommunityContributions"] = None
+    for (genus, species), group in approved.groupby(["genus", "species"]):
+        mask = (df["Genus"] == genus) & (df["Species"] == species)
+        if not mask.any():
+            continue
+        idx = df.index[mask][0]
+        for _, row in group.iterrows():
+            field = row["field_name"]
+            applied = field not in df.columns or pd.isna(df.at[idx, field])
+            contribution = {
+                "display_name": row["submitter_display_name"],
+                "field_name": field,
+                "field_value": row["field_value"],
+                "source_citation": row["source_citation"],
+                "applied": applied,
+            }
+            current = df.at[idx, "_CommunityContributions"]
+            df.at[idx, "_CommunityContributions"] = (
+                [*current, contribution] if isinstance(current, list) else [contribution]
+            )
+
+            if not applied:
+                continue
+            if field not in df.columns:
+                df[field] = None
+                df[f"{field}_CommunitySource"] = None
+            df.at[idx, field] = row["field_value"]
+            df.at[idx, f"{field}_CommunitySource"] = row["source_citation"]
+    return df
+
+
+def _apply_admin_overrides(df):
+    # Admin overrides take precedence without changing the FishBase snapshot.
+    try:
+        overrides = submissions.list_admin_data_overrides()
+    except Exception:
+        return df
+    if overrides.empty:
+        return df
+
+    df = df.copy()
+    for row in overrides.to_dict(orient="records"):
+        field = row["field_name"]
+        if field not in _ADMIN_FIELD_TYPES or field not in df.columns:
+            continue
+        mask = (df["Genus"] == row["genus"]) & (df["Species"] == row["species"])
+        if not mask.any():
+            continue
+        value = row["field_value"]
+        field_type = _ADMIN_FIELD_TYPES[field]
+        try:
+            if field_type == "integer":
+                value = int(value)
+            elif field_type == "number":
+                value = float(value)
+        except (TypeError, ValueError):
+            continue
+        df.loc[mask, field] = value
+    return df
+
+
 def _split_values(column) -> set[str]:
     values: set[str] = set()
     for cell in column.dropna():
@@ -152,7 +253,7 @@ async def get_species_table(client: httpx.AsyncClient):
             df = await asyncio.to_thread(_load_species, version)
             df["Dangerous"] = df["Dangerous"].replace("None", None)
             _cache["version"] = version
-            _cache["species"] = df
+            _cache["species_base"] = df
             _cache["dangerous_categories"] = sorted(
                 c for c in df["Dangerous"].dropna().unique()
             )
@@ -162,7 +263,13 @@ async def get_species_table(client: httpx.AsyncClient):
             lakes = sorted(f"Lake {name}" for name in _split_values(df["Lake"]))
             continents = sorted(_split_values(df["Continent"]))
             _cache["locations"] = lakes + continents
-    return _cache["species"], _cache["version"]
+        base = _cache["species_base"]
+        version = _cache["version"]
+
+    # Apply uncached user data outside the lock so approved changes appear immediately.
+    merged = await asyncio.to_thread(_apply_community_submissions, base)
+    merged = await asyncio.to_thread(_apply_admin_overrides, merged)
+    return merged, version
 
 
 async def get_dangerous_categories(client: httpx.AsyncClient):

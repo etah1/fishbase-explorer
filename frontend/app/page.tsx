@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import FishTable, { SortDir, SortKey } from "@/components/FishTable";
 
 const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -54,8 +54,9 @@ export default function FishPage() {
       .then((d) => setLocations(d.locations));
   }, []);
 
-  const fetchFish = useCallback(async () => {
-    setLoading(true);
+  useEffect(() => {
+    let cancelled = false;
+    const loadingTimer = window.setTimeout(() => setLoading(true), 0);
     const params = new URLSearchParams();
     if (search) params.set("q", search);
     if (genus) params.set("genus", genus);
@@ -73,17 +74,22 @@ export default function FishPage() {
     params.set("limit", String(PER_PAGE));
     params.set("offset", String((page - 1) * PER_PAGE));
 
-    const res = await fetch(`${API}/fish?${params}`);
-    const data = await res.json();
-    setFish(data.data);
-    setTotal(data.total);
-    setFishbaseVersion(data.fishbase_version);
-    setLoading(false);
-  }, [search, genus, habitat, maxLength, dangerous, bodyShape, migration, location, page, sortBy, sortDir]);
+    fetch(`${API}/fish?${params}`)
+      .then((response) => response.json())
+      .then((data) => {
+        if (cancelled) return;
+        setFish(data.data);
+        setTotal(data.total);
+        setFishbaseVersion(data.fishbase_version);
+        setLoading(false);
+      });
 
-  useEffect(() => {
-    fetchFish();
-  }, [fetchFish]);
+    // Ignore stale responses when filters change quickly.
+    return () => {
+      cancelled = true;
+      window.clearTimeout(loadingTimer);
+    };
+  }, [search, genus, habitat, maxLength, dangerous, bodyShape, migration, location, page, sortBy, sortDir]);
 
   function handleFilterChange(setter: (v: string) => void) {
     return (e: React.ChangeEvent<HTMLSelectElement | HTMLInputElement>) => {
@@ -215,4 +221,3 @@ export default function FishPage() {
     </main>
   );
 }
-
