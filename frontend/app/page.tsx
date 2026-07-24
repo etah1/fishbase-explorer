@@ -22,7 +22,9 @@ export default function FishPage() {
   const [locations, setLocations] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
   const [fishbaseVersion, setFishbaseVersion] = useState("");
+  const [retryToken, setRetryToken] = useState(0);
 
   const [search, setSearch] = useState("");
   const [genus, setGenus] = useState("");
@@ -39,24 +41,30 @@ export default function FishPage() {
   useEffect(() => {
     fetch(`${API}/fish/genera`)
       .then((r) => r.json())
-      .then((d) => setGenera(d.genera));
+      .then((d) => setGenera(d.genera))
+      .catch(() => {});
     fetch(`${API}/fish/dangerous-categories`)
       .then((r) => r.json())
-      .then((d) => setDangerCategories(d.categories));
+      .then((d) => setDangerCategories(d.categories))
+      .catch(() => {});
     fetch(`${API}/fish/body-shapes`)
       .then((r) => r.json())
-      .then((d) => setBodyShapes(d.shapes));
+      .then((d) => setBodyShapes(d.shapes))
+      .catch(() => {});
     fetch(`${API}/fish/migration-categories`)
       .then((r) => r.json())
-      .then((d) => setMigrationCategories(d.categories));
+      .then((d) => setMigrationCategories(d.categories))
+      .catch(() => {});
     fetch(`${API}/fish/locations`)
       .then((r) => r.json())
-      .then((d) => setLocations(d.locations));
-  }, []);
+      .then((d) => setLocations(d.locations))
+      .catch(() => {});
+  }, [retryToken]);
 
   useEffect(() => {
     let cancelled = false;
     const loadingTimer = window.setTimeout(() => setLoading(true), 0);
+    setError("");
     const params = new URLSearchParams();
     if (search) params.set("q", search);
     if (genus) params.set("genus", genus);
@@ -75,12 +83,24 @@ export default function FishPage() {
     params.set("offset", String((page - 1) * PER_PAGE));
 
     fetch(`${API}/fish?${params}`)
-      .then((response) => response.json())
+      .then((response) => {
+        if (!response.ok) throw new Error(`Request failed (${response.status})`);
+        return response.json();
+      })
       .then((data) => {
         if (cancelled) return;
         setFish(data.data);
         setTotal(data.total);
         setFishbaseVersion(data.fishbase_version);
+        setLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(
+          err instanceof Error
+            ? `Could not load species: ${err.message}`
+            : "Could not load species."
+        );
         setLoading(false);
       });
 
@@ -89,7 +109,7 @@ export default function FishPage() {
       cancelled = true;
       window.clearTimeout(loadingTimer);
     };
-  }, [search, genus, habitat, maxLength, dangerous, bodyShape, migration, location, page, sortBy, sortDir]);
+  }, [search, genus, habitat, maxLength, dangerous, bodyShape, migration, location, page, sortBy, sortDir, retryToken]);
 
   function handleFilterChange(setter: (v: string) => void) {
     return (e: React.ChangeEvent<HTMLSelectElement | HTMLInputElement>) => {
@@ -211,6 +231,17 @@ export default function FishPage() {
 
       {loading ? (
         <p className="py-12 text-center text-black">Loading...</p>
+      ) : error ? (
+        <div className="py-12 text-center text-black">
+          <p className="mb-3">{error}</p>
+          <button
+            type="button"
+            onClick={() => setRetryToken((t) => t + 1)}
+            className="h-8 rounded-full border border-black bg-white px-4 text-xs font-semibold hover:bg-black hover:text-white"
+          >
+            Retry
+          </button>
+        </div>
       ) : (
         <FishTable fish={fish} onSort={handleSort} />
       )}

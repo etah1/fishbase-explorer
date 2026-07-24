@@ -46,6 +46,8 @@ ADMIN_EDITABLE_FIELDS = [
 ]
 _ADMIN_FIELD_TYPES = {field["key"]: field["type"] for field in ADMIN_EDITABLE_FIELDS}
 VERSION_CHECK_TTL_SECONDS = 60 * 60
+# submissions.list_*() open a fresh Postgres connection each time -- cache the results briefly.
+COMMUNITY_CACHE_TTL_SECONDS = 60
 
 _lock = asyncio.Lock()
 _cache: dict = {
@@ -57,7 +59,35 @@ _cache: dict = {
     "body_shapes": None,
     "migration_categories": None,
     "locations": None,
+    "community_df": None,
+    "community_checked_at": 0.0,
+    "overrides_df": None,
+    "overrides_checked_at": 0.0,
 }
+
+
+def invalidate_community_cache() -> None:
+    """Force the next request to refetch approved submissions / admin overrides from Postgres."""
+    _cache["community_checked_at"] = 0.0
+    _cache["overrides_checked_at"] = 0.0
+
+
+def _cached_approved_submissions():
+    now = time.monotonic()
+    stale = now - _cache["community_checked_at"] >= COMMUNITY_CACHE_TTL_SECONDS
+    if _cache["community_df"] is None or stale:
+        _cache["community_df"] = submissions.list_approved_submissions()
+        _cache["community_checked_at"] = now
+    return _cache["community_df"]
+
+
+def _cached_admin_overrides():
+    now = time.monotonic()
+    stale = now - _cache["overrides_checked_at"] >= COMMUNITY_CACHE_TTL_SECONDS
+    if _cache["overrides_df"] is None or stale:
+        _cache["overrides_df"] = submissions.list_admin_data_overrides()
+        _cache["overrides_checked_at"] = now
+    return _cache["overrides_df"]
 
 
 async def get_latest_version(client: httpx.AsyncClient) -> str:
@@ -171,7 +201,7 @@ def _apply_community_submissions(df):
     and are tagged with a `{field}_CommunitySource` citation so callers can
     distinguish them rather than silently blending them in."""
     try:
-        approved = submissions.list_approved_submissions()
+        approved = _cached_approved_submissions()
     except Exception:
         return df
     if approved.empty:
@@ -212,7 +242,7 @@ def _apply_community_submissions(df):
 def _apply_admin_overrides(df):
     # Admin overrides take precedence without changing the FishBase snapshot.
     try:
-        overrides = submissions.list_admin_data_overrides()
+        overrides = _cached_admin_overrides()
     except Exception:
         return df
     if overrides.empty:
@@ -266,7 +296,7 @@ async def get_species_table(client: httpx.AsyncClient):
         base = _cache["species_base"]
         version = _cache["version"]
 
-    # Apply uncached user data outside the lock so approved changes appear immediately.
+    # Applied outside the lock -- each pulls from the short-TTL cache above, not Postgres directly.
     merged = await asyncio.to_thread(_apply_community_submissions, base)
     merged = await asyncio.to_thread(_apply_admin_overrides, merged)
     return merged, version
