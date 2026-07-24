@@ -174,7 +174,8 @@ def _lookup_tables(df):
 
 
 async def get_cichlid_tree(client: httpx.AsyncClient, trait: str | None = None):
-    df, fish_version = await fishbase_data.get_species_table(client)
+    async with httpx.AsyncClient(timeout=15) as fb_client:
+        df, fish_version = await fishbase_data.get_species_table(fb_client)
 
     traits_by_name = {
         f"{row['Genus']}_{row['Species']}": {
