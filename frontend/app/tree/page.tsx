@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import PhyloTree, { collectLeafNames, ColumnDef, ColumnLegend, formatLegendLabel, TreeNode } from "@/components/PhyloTree";
+import PhyloTree, { collectLeafNames, ColumnDef, ColumnLegend, formatLegendLabel, MarkerFilters, TreeNode } from "@/components/PhyloTree";
 import MultiSelectDropdown from "@/components/MultiSelectDropdown";
 import { formatTraitField } from "@/utils/traitLabels";
 
@@ -31,9 +31,7 @@ export default function TreePage() {
   const [selectedLegends, setSelectedLegends] = useState<ColumnLegend[]>([]);
   const [shownLeaves, setShownLeaves] = useState(0);
   const [excluded, setExcluded] = useState<string[]>([]);
-  const [legendOpen, setLegendOpen] = useState(false);
-  const [markerSearch, setMarkerSearch] = useState("");
-  const [markerCategory, setMarkerCategory] = useState("");
+  const [markerFilters, setMarkerFilters] = useState<MarkerFilters>({});
 
   useEffect(() => {
     fetch(`${API}/fish/tree`)
@@ -45,15 +43,6 @@ export default function TreePage() {
       .catch((err) => setError(err instanceof Error ? err.message : "Could not load phylogeny."))
       .finally(() => setLoading(false));
   }, []);
-
-  useEffect(() => {
-    if (!legendOpen) return;
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setLegendOpen(false);
-    }
-    document.addEventListener("keydown", handleKeyDown);
-    return () => document.removeEventListener("keydown", handleKeyDown);
-  }, [legendOpen]);
 
   const columns = useMemo(
     () => AVAILABLE_COLUMNS.filter((c) => selected.includes(c.key)),
@@ -67,23 +56,35 @@ export default function TreePage() {
       .map((name) => ({ key: name, label: name.replace("_", " ") }));
   }, [tree]);
   const excludedNames = useMemo(() => new Set(excluded), [excluded]);
-  const markerRows = useMemo(
+  const markerOptions = useMemo(
     () => legends.flatMap((section) =>
-      section.items.map((item) => ({
-        category: section.title,
-        label: formatLegendLabel(item.label),
-        color: item.color,
-      }))
+      section.items
+        .filter((item) => section.filterable && item.value != null)
+        .map((item) => ({
+          key: `${section.field}::${item.value}`,
+          label: `${section.title}: ${formatLegendLabel(item.label)}`,
+          color: item.color,
+        }))
     ),
     [legends]
   );
-  const filteredMarkerRows = useMemo(() => {
-    const query = markerSearch.trim().toLowerCase();
-    return markerRows.filter((row) =>
-      (!markerCategory || row.category === markerCategory)
-      && (!query || row.category.toLowerCase().includes(query) || row.label.toLowerCase().includes(query))
-    );
-  }, [markerRows, markerSearch, markerCategory]);
+  const selectedMarkerKeys = useMemo(
+    () => Object.entries(markerFilters).flatMap(([field, values]) => values.map((v) => `${field}::${v}`)),
+    [markerFilters]
+  );
+  const activeMarkerFilterCount = selectedMarkerKeys.length;
+
+  function handleMarkerFilterChange(keys: string[]) {
+    const next: MarkerFilters = {};
+    for (const key of keys) {
+      const separatorIndex = key.indexOf("::");
+      if (separatorIndex === -1) continue;
+      const field = key.slice(0, separatorIndex);
+      const value = key.slice(separatorIndex + 2);
+      (next[field] ??= []).push(value);
+    }
+    setMarkerFilters(next);
+  }
 
   function handlePrint() {
     window.print();
@@ -111,22 +112,34 @@ export default function TreePage() {
           showSelectAll
         />
 
-        <button
-          type="button"
-          onClick={() => setLegendOpen(true)}
-          disabled={loading || !!error || !tree}
-          className="rounded-full border border-black bg-white px-3 py-1.5 text-xs font-semibold text-black shadow-sm hover:bg-black hover:text-white disabled:opacity-40"
-        >
-          Filter markers &amp; labels
-        </button>
+        <span className="ml-2 text-xs font-semibold text-black">Exclude markers &amp; labels:</span>
+        <MultiSelectDropdown
+          options={markerOptions}
+          selected={selectedMarkerKeys}
+          onChange={handleMarkerFilterChange}
+          placeholder="None excluded"
+          searchable
+          searchPlaceholder="Search markers..."
+          panelClassName="w-80 max-w-[90vw]"
+        />
 
         <button
           type="button"
           onClick={handlePrint}
           disabled={loading || !!error || !tree}
-          className="ml-auto rounded-full border border-black bg-white px-3 py-1.5 text-xs font-semibold text-black shadow-sm hover:bg-black hover:text-white disabled:opacity-40"
+          aria-label="Print"
+          title="Print"
+          className="ml-auto flex h-8 w-8 items-center justify-center rounded-full border border-black bg-white text-black shadow-sm hover:bg-black hover:text-white disabled:opacity-40"
         >
-          Print
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path
+              d="M6 9V3h12v6M6 18H4a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1h16a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-2M6 14h12v7H6z"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
         </button>
       </div>
 
@@ -165,6 +178,7 @@ export default function TreePage() {
             columns={columns}
             legendColumns={AVAILABLE_COLUMNS}
             excludedNames={excludedNames}
+            markerFilters={markerFilters}
             onLegendChange={setLegends}
             onSelectedLegendChange={setSelectedLegends}
             onLeafCountChange={setShownLeaves}
@@ -177,6 +191,7 @@ export default function TreePage() {
             ? ` (only those with data for ${columns.map((c) => c.label).join(", ")})`
             : ""}
           {excluded.length > 0 ? ` (${excluded.length} species manually excluded)` : ""}
+          {activeMarkerFilterCount > 0 ? ` (${activeMarkerFilterCount} marker/label value${activeMarkerFilterCount === 1 ? "" : "s"} excluded)` : ""}
           , branching based on{" "}
           <a href="https://tree.opentreeoflife.org" className="text-black underline" target="_blank" rel="noopener noreferrer">
             Open Tree of Life
@@ -187,101 +202,6 @@ export default function TreePage() {
           time-calibrated tree.
         </p>
       </div>
-
-      {legendOpen && (
-        <div
-          className="modal-overlay flex items-center justify-center bg-black/40 p-4"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setLegendOpen(false);
-          }}
-        >
-          <section
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="marker-table-title"
-            className="flex max-h-[85vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-black bg-white text-black shadow-xl"
-          >
-            <div className="flex shrink-0 items-center justify-between border-b border-black/15 px-4 py-3">
-              <div>
-                <h2 id="marker-table-title" className="text-base font-bold">Filter markers and labels</h2>
-                <p className="text-xs text-black/55">Search labels or narrow them to one category.</p>
-              </div>
-              <button
-                type="button"
-                onClick={() => setLegendOpen(false)}
-                className="rounded-full border border-black px-3 py-1 text-xs font-semibold hover:bg-black hover:text-white"
-              >
-                Close
-              </button>
-            </div>
-            <div className="grid shrink-0 gap-2 border-b border-black/15 p-4 sm:grid-cols-[1fr_16rem_auto]">
-              <input
-                type="search"
-                value={markerSearch}
-                onChange={(event) => setMarkerSearch(event.target.value)}
-                placeholder="Search marker labels..."
-                className="h-9 rounded-md border border-black bg-white px-3 text-sm outline-none focus:border-[#1b7cb2] focus:ring-2 focus:ring-[#9fd1ff]"
-              />
-              <select
-                value={markerCategory}
-                onChange={(event) => setMarkerCategory(event.target.value)}
-                className="h-9 rounded-md border border-black bg-white px-3 text-sm outline-none focus:border-[#1b7cb2] focus:ring-2 focus:ring-[#9fd1ff]"
-              >
-                <option value="">All categories</option>
-                {legends.map((section) => (
-                  <option key={section.title} value={section.title}>{section.title}</option>
-                ))}
-              </select>
-              <button
-                type="button"
-                onClick={() => {
-                  setMarkerSearch("");
-                  setMarkerCategory("");
-                }}
-                disabled={!markerSearch && !markerCategory}
-                className="h-9 rounded-full border border-black px-4 text-xs font-semibold hover:bg-black hover:text-white disabled:opacity-40"
-              >
-                Clear
-              </button>
-            </div>
-            <p className="shrink-0 border-b border-black/10 px-4 py-2 text-xs text-black/55">
-              {filteredMarkerRows.length} of {markerRows.length} markers shown
-            </p>
-            <div className="overflow-auto">
-              <table className="w-full text-left text-sm">
-                <thead className="sticky top-0 border-b border-black bg-white">
-                  <tr>
-                    <th className="w-20 px-4 py-2">Marker</th>
-                    <th className="px-4 py-2">Category</th>
-                    <th className="px-4 py-2">Label</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {filteredMarkerRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={3} className="px-4 py-8 text-center text-sm text-black/55">
-                        No markers match these filters.
-                      </td>
-                    </tr>
-                  ) : filteredMarkerRows.map((row) => (
-                      <tr key={`${row.category}-${row.label}`} className="border-b border-black/10 last:border-0">
-                        <td className="px-4 py-2">
-                          <span
-                            className="inline-block h-4 w-4 rounded-full border border-black/20"
-                            style={{ backgroundColor: row.color }}
-                            aria-label={row.color}
-                          />
-                        </td>
-                        <td className="px-4 py-2 font-semibold">{row.category}</td>
-                        <td className="px-4 py-2">{row.label}</td>
-                      </tr>
-                    ))}
-                </tbody>
-              </table>
-            </div>
-          </section>
-        </div>
-      )}
     </main>
   );
 }

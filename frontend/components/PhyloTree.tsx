@@ -20,8 +20,11 @@ export type ColumnDef = {
   type: "categorical" | "continuous" | "status";
 };
 
-export type LegendItem = { label: string; color: string };
-export type ColumnLegend = { title: string; items: LegendItem[] };
+export type LegendItem = { label: string; color: string; value?: string };
+export type ColumnLegend = { title: string; field: string; filterable: boolean; items: LegendItem[] };
+export type MarkerFilters = Record<string, string[]>;
+const NO_DATA_VALUE = "__no_data__";
+const UNRATED_VALUE = "__unrated__";
 
 const LEAF_ARC_LENGTH = 14;
 const MIN_TREE_RADIUS = 300;
@@ -84,19 +87,60 @@ export function formatLegendLabel(label: string) {
 export function pruneTree(
   node: TreeNode,
   columns: ColumnDef[],
-  excludedNames: ReadonlySet<string> = new Set()
+  excludedNames: ReadonlySet<string> = new Set(),
+  matchesLeaf?: (node: TreeNode) => boolean
 ): TreeNode | null {
   if (!node.children) {
     if (node.name && excludedNames.has(node.name)) return null;
     const hasAllData = columns.every((col) => node.traits?.[col.key] != null);
-    return hasAllData ? node : null;
+    if (!hasAllData) return null;
+    if (matchesLeaf && !matchesLeaf(node)) return null;
+    return node;
   }
   const prunedChildren = node.children
-    .map((c) => pruneTree(c, columns, excludedNames))
+    .map((c) => pruneTree(c, columns, excludedNames, matchesLeaf))
     .filter((c): c is TreeNode => c !== null);
   if (prunedChildren.length === 0) return null;
   if (prunedChildren.length === 1) return prunedChildren[0];
   return { ...node, children: prunedChildren };
+}
+
+// The key a leaf falls under for a given marker/label field: the raw trait
+// value (or bucket key for status fields, or NO_DATA_VALUE / UNRATED_VALUE
+// when absent). Shared by filter matching and by the "what's still shown"
+// legend computation so both agree on how a leaf is categorized.
+export function markerKeyFor(
+  traits: Record<string, string | number | null> | undefined,
+  field: string,
+  fieldTypes: Record<string, ColumnDef["type"]>
+): string {
+  if (field === "Subfamily") {
+    const v = traits?.Subfamily;
+    return typeof v === "string" ? v : NO_DATA_VALUE;
+  }
+  const raw = traits?.[field];
+  if (fieldTypes[field] === "status") {
+    const bucket = typeof raw === "string" ? IUCN_STATUS_BUCKET[raw] : undefined;
+    return bucket ?? UNRATED_VALUE;
+  }
+  return typeof raw === "string" ? raw : NO_DATA_VALUE;
+}
+
+// A marker/label filter selects raw trait values (or bucket keys for status
+// fields, or NO_DATA_VALUE / UNRATED_VALUE) per field to EXCLUDE; a leaf is
+// dropped if it falls under any checked value in a field with an active
+// selection.
+export function leafMatchesMarkerFilters(
+  traits: Record<string, string | number | null> | undefined,
+  filters: MarkerFilters,
+  fieldTypes: Record<string, ColumnDef["type"]>
+): boolean {
+  for (const field of Object.keys(filters)) {
+    const excluded = filters[field];
+    if (!excluded || excluded.length === 0) continue;
+    if (excluded.includes(markerKeyFor(traits, field, fieldTypes))) return false;
+  }
+  return true;
 }
 
 export function collectLeafNames(node: TreeNode, out: string[] = []): string[] {
@@ -145,12 +189,13 @@ function buildCategoricalScale(leaves: Positioned[], key: string) {
   const top = ranked.slice(0, CATEGORICAL_PALETTE.length).map(([label]) => label);
   const colorOf = new Map(top.map((label, i) => [label, CATEGORICAL_PALETTE[i]]));
 
-  const legend: LegendItem[] = ranked.map(([label]) => ({
-    label: formatTraitValue(key, label),
-    color: colorOf.get(label) ?? OTHER_COLOR,
+  const legend: LegendItem[] = ranked.map(([rawValue]) => ({
+    label: formatTraitValue(key, rawValue),
+    color: colorOf.get(rawValue) ?? OTHER_COLOR,
+    value: rawValue,
   }));
   if (leaves.some((l) => l.data.traits?.[key] == null)) {
-    legend.push({ label: "No data", color: NO_DATA_COLOR });
+    legend.push({ label: "No data", color: NO_DATA_COLOR, value: NO_DATA_VALUE });
   }
 
   return {
@@ -224,12 +269,12 @@ function buildStatusScale(leaves: Positioned[], key: string) {
   const bucketLabel = { good: "Least/near threatened", warning: "Vulnerable", serious: "Endangered", critical: "Critically endangered/extinct" };
   const legend: LegendItem[] = order
     .filter((b) => present.has(b))
-    .map((b) => ({ label: bucketLabel[b], color: STATUS_COLORS[b] }));
+    .map((b) => ({ label: bucketLabel[b], color: STATUS_COLORS[b], value: b }));
   if (leaves.some((l) => {
     const code = l.data.traits?.[key];
     return code == null || typeof code !== "string" || !IUCN_STATUS_BUCKET[code];
   })) {
-    legend.push({ label: "Not evaluated / data deficient", color: NO_DATA_COLOR });
+    legend.push({ label: "Not evaluated / data deficient", color: NO_DATA_COLOR, value: UNRATED_VALUE });
   }
 
   return {
@@ -253,6 +298,7 @@ function subfamilyColorScale(leaves: Positioned[]) {
   const legend: LegendItem[] = ranked.map(([label]) => ({
     label,
     color: colorOf.get(label) ?? OTHER_COLOR,
+    value: label,
   }));
   return {
     colorOf: (s: string | null | undefined) => (s ? colorOf.get(s) ?? OTHER_COLOR : null),
@@ -265,6 +311,7 @@ export default function PhyloTree({
   columns,
   legendColumns = columns,
   excludedNames,
+  markerFilters,
   onLegendChange,
   onSelectedLegendChange,
   onLeafCountChange,
@@ -273,6 +320,7 @@ export default function PhyloTree({
   columns: ColumnDef[];
   legendColumns?: ColumnDef[];
   excludedNames?: ReadonlySet<string>;
+  markerFilters?: MarkerFilters;
   onLegendChange?: (legends: ColumnLegend[]) => void;
   onSelectedLegendChange?: (legends: ColumnLegend[]) => void;
   onLeafCountChange?: (count: number) => void;
@@ -286,14 +334,75 @@ export default function PhyloTree({
     viewportX: number;
     viewportY: number;
   } | null>(null);
-  const prunedData = useMemo(() => {
+
+  const fieldTypes = useMemo(() => {
+    const map: Record<string, ColumnDef["type"]> = {};
+    for (const col of legendColumns) map[col.key] = col.type;
+    return map;
+  }, [legendColumns]);
+
+  const activeMarkerFilters = useMemo(() => markerFilters ?? {}, [markerFilters]);
+  const hasActiveMarkerFilters = useMemo(
+    () => Object.values(activeMarkerFilters).some((v) => v && v.length > 0),
+    [activeMarkerFilters]
+  );
+
+  // Data-availability + exclusion only. This is the stable basis for legend
+  // colors and marker options, so rows don't disappear as marker filters toggle.
+  const dataPrunedData = useMemo(() => {
     const pruned = pruneTree(data, columns, excludedNames);
     return pruned && ladderizeTree(pruned);
   }, [data, columns, excludedNames]);
 
+  // Also applies marker/label value filters. This is what's actually rendered.
+  const prunedData = useMemo(() => {
+    if (!hasActiveMarkerFilters) return dataPrunedData;
+    const pruned = pruneTree(data, columns, excludedNames, (leaf) =>
+      leafMatchesMarkerFilters(leaf.traits, activeMarkerFilters, fieldTypes)
+    );
+    return pruned && ladderizeTree(pruned);
+  }, [data, columns, excludedNames, activeMarkerFilters, hasActiveMarkerFilters, fieldTypes, dataPrunedData]);
+
   useEffect(() => {
     onLeafCountChange?.(prunedData ? countLeaves(prunedData) : 0);
   }, [prunedData, onLeafCountChange]);
+
+  const legendLeaves = useMemo(() => {
+    if (!dataPrunedData) return [] as Positioned[];
+    return hierarchy(dataPrunedData, (d) => d.children).leaves() as Positioned[];
+  }, [dataPrunedData]);
+
+  const { columnRenderers, legends, subfamilyColorOf, subfamilyLegend } = useMemo(() => {
+    const { colorOf: subfamilyColorOf, legend: subfamilyLegend } = subfamilyColorScale(legendLeaves);
+
+    function buildColumnRenderer(col: ColumnDef) {
+      if (col.type === "continuous") {
+        const scale = buildSequentialScale(legendLeaves, col.key);
+        return { col, kind: "continuous" as const, scale };
+      }
+      if (col.type === "status") {
+        const scale = buildStatusScale(legendLeaves, col.key);
+        return { col, kind: "status" as const, scale };
+      }
+      const scale = buildCategoricalScale(legendLeaves, col.key);
+      return { col, kind: "categorical" as const, scale };
+    }
+
+    const columnRenderers = columns.map(buildColumnRenderer);
+    const legends: ColumnLegend[] = [
+      { title: "Subfamily (branch color)", field: "Subfamily", filterable: true, items: subfamilyLegend },
+      ...legendColumns.map((col) => {
+        const renderer = buildColumnRenderer(col);
+        return { title: col.label, field: col.key, filterable: col.type !== "continuous", items: renderer.scale.legend };
+      }),
+    ];
+
+    return { columnRenderers, legends, subfamilyColorOf, subfamilyLegend };
+  }, [legendLeaves, columns, legendColumns]);
+
+  useEffect(() => {
+    onLegendChange?.(legends);
+  }, [legends, onLegendChange]);
 
   // Keep hook order stable even when filters remove every species.
   const root = useMemo(
@@ -301,7 +410,7 @@ export default function PhyloTree({
     [prunedData, data]
   );
 
-  const { nodes, links, radiusScale, treeRadius, columnRenderers, legends, selectedLegends, subfamilyColorOf } = useMemo(() => {
+  const { nodes, links, radiusScale, treeRadius, renderLeaves } = useMemo(() => {
     const nodes = root.descendants() as Positioned[];
     const leaves = root.leaves() as Positioned[];
 
@@ -319,7 +428,6 @@ export default function PhyloTree({
       }
     });
 
-    const { colorOf: subfamilyColorOf, legend: subfamilyLegend } = subfamilyColorScale(leaves);
     root.eachAfter((d) => {
       const node = d as Positioned;
       if (!node.children) {
@@ -340,50 +448,40 @@ export default function PhyloTree({
     const radiusScale = scaleLinear().domain([0, maxX || 1]).range([0, treeRadius]);
     const links = root.links() as { source: Positioned; target: Positioned }[];
 
-    function buildColumnRenderer(col: ColumnDef) {
-      if (col.type === "continuous") {
-        const scale = buildSequentialScale(leaves, col.key);
-        return { col, kind: "continuous" as const, scale };
+    return { nodes, links, radiusScale, treeRadius, renderLeaves: leaves };
+  }, [root]);
+
+  // Which marker/label values are still present after exclusion, so the
+  // swatch legend above the tree only lists what's actually shown.
+  const presentMarkerKeys = useMemo(() => {
+    const map: Record<string, Set<string>> = { Subfamily: new Set() };
+    for (const col of columns) map[col.key] = new Set();
+    for (const leaf of renderLeaves) {
+      map.Subfamily.add(markerKeyFor(leaf.data.traits, "Subfamily", fieldTypes));
+      for (const col of columns) {
+        if (col.type === "continuous") continue;
+        map[col.key].add(markerKeyFor(leaf.data.traits, col.key, fieldTypes));
       }
-      if (col.type === "status") {
-        const scale = buildStatusScale(leaves, col.key);
-        return { col, kind: "status" as const, scale };
-      }
-      const scale = buildCategoricalScale(leaves, col.key);
-      return { col, kind: "categorical" as const, scale };
     }
+    return map;
+  }, [renderLeaves, columns, fieldTypes]);
 
-    const columnRenderers = columns.map(buildColumnRenderer);
-    const legends: ColumnLegend[] = [
-      { title: "Subfamily (branch color)", items: subfamilyLegend },
-      ...legendColumns.map((col) => {
-        const renderer = buildColumnRenderer(col);
-        return { title: col.label, items: renderer.scale.legend };
-      }),
-    ];
-    const selectedLegends: ColumnLegend[] = [
-      { title: "Subfamily (branch color)", items: subfamilyLegend },
-      ...columnRenderers.map((renderer) => ({
-        title: renderer.col.label,
-        items: renderer.scale.legend,
-      })),
-    ];
-
-    return {
-      nodes,
-      links,
-      radiusScale,
-      treeRadius,
-      columnRenderers,
-      legends,
-      selectedLegends,
-      subfamilyColorOf,
-    };
-  }, [root, columns, legendColumns]);
-
-  useEffect(() => {
-    onLegendChange?.(legends);
-  }, [legends, onLegendChange]);
+  const selectedLegends: ColumnLegend[] = useMemo(() => [
+    {
+      title: "Subfamily (branch color)",
+      field: "Subfamily",
+      filterable: true,
+      items: subfamilyLegend.filter((item) => !item.value || presentMarkerKeys.Subfamily?.has(item.value)),
+    },
+    ...columnRenderers.map((renderer) => ({
+      title: renderer.col.label,
+      field: renderer.col.key,
+      filterable: renderer.col.type !== "continuous",
+      items: renderer.kind === "continuous"
+        ? renderer.scale.legend
+        : renderer.scale.legend.filter((item) => !item.value || presentMarkerKeys[renderer.col.key]?.has(item.value)),
+    })),
+  ], [subfamilyLegend, columnRenderers, presentMarkerKeys]);
 
   useEffect(() => {
     onSelectedLegendChange?.(selectedLegends);
@@ -456,19 +554,19 @@ export default function PhyloTree({
   if (!prunedData) {
     return (
       <p className="py-12 text-center text-black">
-        No species are left to show. Try unchecking a filter or removing an excluded species.
+        No species are left to show. Try unchecking a filter, un-excluding a marker or label, or removing an excluded species.
       </p>
     );
   }
 
   return (
     <>
-      <div className="mb-2 flex items-center justify-end gap-2 print:hidden" role="toolbar" aria-label="Tree zoom controls">
+      <div className="mb-2 flex items-center justify-end gap-1 print:hidden" role="toolbar" aria-label="Tree zoom controls">
         <button
           type="button"
           onClick={() => changeZoom(zoom - ZOOM_STEP)}
           disabled={zoom <= MIN_ZOOM}
-          className="flex h-9 w-9 items-center justify-center rounded-md border border-black bg-white text-lg font-semibold text-black shadow-sm transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex h-6 w-6 items-center justify-center rounded-md border border-black bg-white text-xs font-semibold text-black shadow-sm transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
           aria-label="Zoom out"
           title="Zoom out"
         >
@@ -477,7 +575,7 @@ export default function PhyloTree({
         <button
           type="button"
           onClick={() => changeZoom(1)}
-          className="h-9 min-w-16 rounded-md border border-black bg-white px-2 text-sm font-medium text-black shadow-sm transition-colors hover:bg-blue-50"
+          className="h-6 min-w-11 rounded-md border border-black bg-white px-1.5 text-[11px] font-medium text-black shadow-sm transition-colors hover:bg-blue-50"
           aria-label={`Reset zoom, currently ${Math.round(zoom * 100)} percent`}
           title="Reset zoom"
         >
@@ -487,7 +585,7 @@ export default function PhyloTree({
           type="button"
           onClick={() => changeZoom(zoom + ZOOM_STEP)}
           disabled={zoom >= MAX_ZOOM}
-          className="flex h-9 w-9 items-center justify-center rounded-md border border-black bg-white text-lg font-semibold text-black shadow-sm transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
+          className="flex h-6 w-6 items-center justify-center rounded-md border border-black bg-white text-xs font-semibold text-black shadow-sm transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40"
           aria-label="Zoom in"
           title="Zoom in"
         >

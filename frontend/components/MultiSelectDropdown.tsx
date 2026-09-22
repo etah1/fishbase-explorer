@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 
-type Option = { key: string; label: string };
+type Option = { key: string; label: string; color?: string };
 
 type MultiSelectDropdownProps = {
   options: Option[];
@@ -10,6 +10,7 @@ type MultiSelectDropdownProps = {
   onChange: (keys: string[]) => void;
   placeholder: string;
   className?: string;
+  panelClassName?: string;
   searchable?: boolean;
   searchPlaceholder?: string;
   showSelectAll?: boolean;
@@ -30,6 +31,7 @@ export default function MultiSelectDropdown({
   onChange,
   placeholder,
   className,
+  panelClassName = "w-64",
   searchable = false,
   searchPlaceholder = "Type to search...",
   showSelectAll = false,
@@ -108,7 +110,7 @@ export default function MultiSelectDropdown({
       </button>
 
       {open && (
-        <div className="absolute left-0 z-20 mt-1 w-64 rounded-lg border border-black bg-white p-1 shadow-lg">
+        <div className={`absolute left-0 z-20 mt-1 ${panelClassName} rounded-lg border border-black bg-white p-1 shadow-lg`}>
           {searchable && (
             <input
               ref={searchRef}
@@ -119,14 +121,27 @@ export default function MultiSelectDropdown({
               className="mb-1 h-7 w-full rounded-md border border-black px-2 text-xs text-black placeholder:text-slate-500 focus:outline-none"
             />
           )}
-          {showSelectAll && options.length > 0 && (
-            <button
-              type="button"
-              onClick={() => onChange(allSelected ? [] : options.map((option) => option.key))}
-              className="mb-1 w-full rounded-md px-2 py-1.5 text-left text-xs font-semibold text-black hover:bg-blue-50"
-            >
-              {allSelected ? "Clear all" : "Select all"}
-            </button>
+          {(showSelectAll || selected.length > 0) && options.length > 0 && (
+            <div className="mb-1 flex items-center gap-1">
+              {showSelectAll && (
+                <button
+                  type="button"
+                  onClick={() => onChange(allSelected ? [] : options.map((option) => option.key))}
+                  className="flex-1 rounded-md px-2 py-1.5 text-left text-xs font-semibold text-black hover:bg-blue-50"
+                >
+                  {allSelected ? "Clear all" : "Select all"}
+                </button>
+              )}
+              {selected.length > 0 && !(showSelectAll && allSelected) && (
+                <button
+                  type="button"
+                  onClick={() => onChange([])}
+                  className="rounded-md px-2 py-1.5 text-left text-xs font-semibold text-black hover:bg-blue-50"
+                >
+                  Clear ({selected.length})
+                </button>
+              )}
+            </div>
           )}
           <div className="max-h-64 overflow-y-auto">
             {visibleOptions.map((option) => (
@@ -139,7 +154,13 @@ export default function MultiSelectDropdown({
                   checked={selected.includes(option.key)}
                   onChange={() => toggle(option.key)}
                 />
-                {option.label}
+                {option.color && (
+                  <span
+                    className="inline-block h-2.5 w-2.5 shrink-0 rounded-full border border-black/20"
+                    style={{ backgroundColor: option.color }}
+                  />
+                )}
+                <span className="min-w-0">{option.label}</span>
               </label>
             ))}
             {searchable && visibleOptions.length === 0 && (
