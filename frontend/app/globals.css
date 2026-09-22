@@ -149,13 +149,14 @@ body > * {
   z-index: 9999 !important;
 }
 
+/* Transform only. Animating the blur radius re-rasterizes this 90vmax surface
+   every frame (measured: 12fps site-wide); a static blur rasterizes once.
+   Do not add will-change here either -- it drops it back to ~10fps. */
 @keyframes ball-pulse {
   0%, 100% {
-    filter: blur(60px);
     transform: translate(-50%, -50%) scale(1);
   }
   50% {
-    filter: blur(75px);
     transform: translate(-50%, -50%) scale(1.1);
   }
 }

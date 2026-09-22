@@ -4,6 +4,7 @@ load_dotenv()
 
 import asyncio
 import math
+from contextlib import asynccontextmanager
 
 import httpx
 import pandas as pd
@@ -16,7 +17,26 @@ import fishbase_data
 import phylogeny_data
 import submissions
 
-app = FastAPI(title="FishBase Explorer API")
+# Constructing an AsyncClient costs ~0.5s (SSL context + pool setup), so one is shared
+# for the app's lifetime. The pool is bounded on purpose: this runs on a 512MB Render
+# instance. The tree path is unaffected by the 15s default -- phylogeny_data passes its
+# own longer per-request timeouts, which take precedence.
+http_client: httpx.AsyncClient | None = None
+_HTTP_LIMITS = httpx.Limits(max_connections=10, max_keepalive_connections=5)
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    global http_client
+    http_client = httpx.AsyncClient(timeout=15, limits=_HTTP_LIMITS)
+    try:
+        yield
+    finally:
+        await http_client.aclose()
+        http_client = None
+
+
+app = FastAPI(title="FishBase Explorer API", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -90,8 +110,7 @@ async def get_fish(
     limit: int = Query(50),
     offset: int = Query(0),
 ):
-    async with httpx.AsyncClient(timeout=15) as client:
-        df, version = await fishbase_data.get_species_table(client)
+    df, version = await fishbase_data.get_species_table(http_client)
 
     if q:
         query = q.strip().casefold()
@@ -145,15 +164,13 @@ async def get_fish(
 
 @app.get("/fish/genera")
 async def get_genera():
-    async with httpx.AsyncClient(timeout=15) as client:
-        genera = await fishbase_data.get_genera(client)
+    genera = await fishbase_data.get_genera(http_client)
     return {"genera": genera}
 
 
 @app.get("/fish/species")
 async def get_species():
-    async with httpx.AsyncClient(timeout=15) as client:
-        df, _ = await fishbase_data.get_species_table(client)
+    df, _ = await fishbase_data.get_species_table(http_client)
     species = (
         df[["Genus", "Species"]]
         .dropna()
@@ -170,36 +187,31 @@ async def get_species():
 
 @app.get("/fish/dangerous-categories")
 async def get_dangerous_categories():
-    async with httpx.AsyncClient(timeout=15) as client:
-        categories = await fishbase_data.get_dangerous_categories(client)
+    categories = await fishbase_data.get_dangerous_categories(http_client)
     return {"categories": categories}
 
 
 @app.get("/fish/body-shapes")
 async def get_body_shapes():
-    async with httpx.AsyncClient(timeout=15) as client:
-        shapes = await fishbase_data.get_body_shapes(client)
+    shapes = await fishbase_data.get_body_shapes(http_client)
     return {"shapes": shapes}
 
 
 @app.get("/fish/migration-categories")
 async def get_migration_categories():
-    async with httpx.AsyncClient(timeout=15) as client:
-        categories = await fishbase_data.get_migration_categories(client)
+    categories = await fishbase_data.get_migration_categories(http_client)
     return {"categories": categories}
 
 
 @app.get("/fish/locations")
 async def get_locations():
-    async with httpx.AsyncClient(timeout=15) as client:
-        locations = await fishbase_data.get_locations(client)
+    locations = await fishbase_data.get_locations(http_client)
     return {"locations": locations}
 
 
 @app.get("/fish/tree")
 async def get_tree(trait: str = Query(None)):
-    async with httpx.AsyncClient(timeout=30) as client:
-        tree = await phylogeny_data.get_cichlid_tree(client, trait=trait)
+    tree = await phylogeny_data.get_cichlid_tree(http_client, trait=trait)
     return tree
 
 
@@ -252,6 +264,7 @@ async def update_display_name(
         user,
         display_name,
     )
+    fishbase_data.invalidate_community_cache()
     await phylogeny_data.invalidate_trait_cache()
     return {"display_name": display_name}
 
@@ -335,8 +348,7 @@ async def save_admin_data_override(
     except ValueError:
         raise HTTPException(status_code=422, detail="Enter a valid value for this field")
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        species_df, _ = await fishbase_data.get_species_table(client)
+    species_df, _ = await fishbase_data.get_species_table(http_client)
     exists = ((species_df["Genus"] == genus) & (species_df["Species"] == species)).any()
     if not exists:
         raise HTTPException(status_code=404, detail="Species not found")
@@ -349,6 +361,7 @@ async def save_admin_data_override(
         field_name,
         field_value,
     )
+    fishbase_data.invalidate_community_cache()
     await phylogeny_data.invalidate_trait_cache()
     return {"id": override_id}
 
@@ -365,6 +378,7 @@ async def delete_admin_data_override(
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="Override not found")
+    fishbase_data.invalidate_community_cache()
     await phylogeny_data.invalidate_trait_cache()
     return {"status": "deleted"}
 
@@ -401,6 +415,7 @@ async def delete_my_submission(
     )
     if not deleted:
         raise HTTPException(status_code=404, detail="Submission not found")
+    fishbase_data.invalidate_community_cache()
     await phylogeny_data.invalidate_trait_cache()
     return {"status": "deleted"}
 
@@ -422,6 +437,7 @@ async def approve_submission(
     )
     if not ok:
         raise HTTPException(status_code=404, detail="No pending submission with this id")
+    fishbase_data.invalidate_community_cache()
     await phylogeny_data.invalidate_trait_cache()
     return {"status": "approved"}
 

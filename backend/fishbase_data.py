@@ -46,6 +46,11 @@ ADMIN_EDITABLE_FIELDS = [
 ]
 _ADMIN_FIELD_TYPES = {field["key"]: field["type"] for field in ADMIN_EDITABLE_FIELDS}
 VERSION_CHECK_TTL_SECONDS = 60 * 60
+# submissions.list_*() opens a fresh DuckDB + Postgres ATTACH (TCP+TLS+auth) on every
+# call (measured 0.5-1.3s each), which dominated request latency. Writes made through
+# this API invalidate the cache immediately; out-of-band edits (Supabase dashboard,
+# manage_overrides.py) take up to this long to appear.
+COMMUNITY_CACHE_TTL_SECONDS = 60
 
 _lock = asyncio.Lock()
 _cache: dict = {
@@ -57,7 +62,37 @@ _cache: dict = {
     "body_shapes": None,
     "migration_categories": None,
     "locations": None,
+    "community_df": None,
+    "community_checked_at": 0.0,
+    "overrides_df": None,
+    "overrides_checked_at": 0.0,
 }
+
+
+def invalidate_community_cache() -> None:
+    """Force the next request to refetch approved submissions / admin overrides."""
+    _cache["community_checked_at"] = 0.0
+    _cache["overrides_checked_at"] = 0.0
+
+
+def _cached_approved_submissions():
+    now = time.monotonic()
+    # The `is None` test matters on top of the TTL: time.monotonic() can be near zero
+    # early in a process's life, so the staleness math alone can leave this unpopulated.
+    stale = now - _cache["community_checked_at"] >= COMMUNITY_CACHE_TTL_SECONDS
+    if _cache["community_df"] is None or stale:
+        _cache["community_df"] = submissions.list_approved_submissions()
+        _cache["community_checked_at"] = now
+    return _cache["community_df"]
+
+
+def _cached_admin_overrides():
+    now = time.monotonic()
+    stale = now - _cache["overrides_checked_at"] >= COMMUNITY_CACHE_TTL_SECONDS
+    if _cache["overrides_df"] is None or stale:
+        _cache["overrides_df"] = submissions.list_admin_data_overrides()
+        _cache["overrides_checked_at"] = now
+    return _cache["overrides_df"]
 
 
 async def get_latest_version(client: httpx.AsyncClient) -> str:
@@ -171,7 +206,7 @@ def _apply_community_submissions(df):
     and are tagged with a `{field}_CommunitySource` citation so callers can
     distinguish them rather than silently blending them in."""
     try:
-        approved = submissions.list_approved_submissions()
+        approved = _cached_approved_submissions()
     except Exception:
         return df
     if approved.empty:
@@ -212,7 +247,7 @@ def _apply_community_submissions(df):
 def _apply_admin_overrides(df):
     # Admin overrides take precedence without changing the FishBase snapshot.
     try:
-        overrides = submissions.list_admin_data_overrides()
+        overrides = _cached_admin_overrides()
     except Exception:
         return df
     if overrides.empty:
@@ -246,7 +281,10 @@ def _split_values(column) -> set[str]:
     return values
 
 
-async def get_species_table(client: httpx.AsyncClient):
+async def _ensure_base_table(client: httpx.AsyncClient):
+    """Load and cache the FishBase snapshot plus the dropdown metadata derived from
+    it. Community/admin data is deliberately not applied here: these lists are built
+    from the base snapshot only, so the dropdown endpoints can skip Postgres."""
     version = await get_latest_version(client)
     async with _lock:
         if _cache["version"] != version:
@@ -263,37 +301,39 @@ async def get_species_table(client: httpx.AsyncClient):
             lakes = sorted(f"Lake {name}" for name in _split_values(df["Lake"]))
             continents = sorted(_split_values(df["Continent"]))
             _cache["locations"] = lakes + continents
-        base = _cache["species_base"]
-        version = _cache["version"]
+        return _cache["species_base"], _cache["version"]
 
-    # Apply uncached user data outside the lock so approved changes appear immediately.
+
+async def get_species_table(client: httpx.AsyncClient):
+    base, version = await _ensure_base_table(client)
+    # Applied outside the lock so approved changes show as soon as the cache rolls.
     merged = await asyncio.to_thread(_apply_community_submissions, base)
     merged = await asyncio.to_thread(_apply_admin_overrides, merged)
     return merged, version
 
 
 async def get_dangerous_categories(client: httpx.AsyncClient):
-    await get_species_table(client)
+    await _ensure_base_table(client)
     return _cache["dangerous_categories"]
 
 
 async def get_genera(client: httpx.AsyncClient):
-    await get_species_table(client)
+    await _ensure_base_table(client)
     return _cache["genera"]
 
 
 async def get_body_shapes(client: httpx.AsyncClient):
-    await get_species_table(client)
+    await _ensure_base_table(client)
     return _cache["body_shapes"]
 
 
 async def get_migration_categories(client: httpx.AsyncClient):
-    await get_species_table(client)
+    await _ensure_base_table(client)
     return _cache["migration_categories"]
 
 
 async def get_locations(client: httpx.AsyncClient):
-    await get_species_table(client)
+    await _ensure_base_table(client)
     return _cache["locations"]
 
 
