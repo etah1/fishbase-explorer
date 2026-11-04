@@ -5,6 +5,7 @@ import threading
 import uuid
 
 import duckdb
+import pandas as pd
 
 CONNSTRING = os.environ["SUPABASE_DB_CONNSTRING"]
 
@@ -77,6 +78,22 @@ def _ensure_schema(con) -> None:
             )
             """
         )
+        con.execute(
+            """
+            CALL postgres_execute(
+                'supa',
+                'ALTER TABLE public.submissions ADD COLUMN IF NOT EXISTS batch_id UUID'
+            )
+            """
+        )
+        con.execute(
+            """
+            CALL postgres_execute(
+                'supa',
+                'CREATE INDEX IF NOT EXISTS submissions_batch_id_idx ON public.submissions (batch_id)'
+            )
+            """
+        )
         con.execute("CALL pg_clear_cache()")
         _schema_ready = True
 
@@ -123,6 +140,45 @@ def create_submission(
     finally:
         con.close()
     return submission_id
+
+
+def create_submission_batch(user: dict, changes: list[dict]) -> str:
+    """Insert many submissions in one statement, tied together by a batch id so
+    they can be reviewed or undone as a unit."""
+    batch_id = str(uuid.uuid4())
+    rows = pd.DataFrame(
+        [
+            {
+                "id": str(uuid.uuid4()),
+                "submitter_id": user["user_id"],
+                "submitter_email": user["email"],
+                "submitter_display_name": user.get("display_name", ""),
+                "genus": c["genus"],
+                "species": c["species"],
+                "field_name": c["field_name"],
+                "field_value": c["field_value"],
+                "source_citation": c.get("source_citation", ""),
+                "batch_id": batch_id,
+            }
+            for c in changes
+        ]
+    )
+    con = _connect()
+    try:
+        con.register("new_rows", rows)
+        con.execute(
+            """
+            INSERT INTO supa.submissions
+                (id, submitter_id, submitter_email, submitter_display_name,
+                 genus, species, field_name, field_value, source_citation, batch_id)
+            SELECT id, submitter_id, submitter_email, submitter_display_name,
+                   genus, species, field_name, field_value, source_citation, batch_id
+            FROM new_rows
+            """
+        )
+    finally:
+        con.close()
+    return batch_id
 
 
 def update_submitter_display_name(user: dict, display_name: str) -> None:
@@ -215,7 +271,7 @@ def list_own_submissions(user: dict):
         return con.execute(
             """
             SELECT id, genus, species, field_name, field_value, source_citation,
-                   status, review_notes, created_at, reviewed_at
+                   status, review_notes, created_at, reviewed_at, batch_id
             FROM supa.submissions
             WHERE submitter_id = ?
             ORDER BY created_at DESC
@@ -253,7 +309,7 @@ def list_pending_submissions():
             SELECT id, submitter_email,
                    coalesce(nullif(trim(submitter_display_name), ''), 'Researcher') AS submitter_display_name,
                    genus, species, field_name, field_value,
-                   source_citation, created_at
+                   source_citation, created_at, batch_id
             FROM supa.submissions
             WHERE status = 'pending'
             ORDER BY created_at ASC
@@ -285,6 +341,48 @@ def review_submission(submission_id: str, reviewer_user_id: str, status: str, re
             [status, reviewer_user_id, review_notes, submission_id],
         )
         return True
+    finally:
+        con.close()
+
+
+def delete_own_batch(user: dict, batch_id: str) -> int:
+    """Delete every submission in one of the user's uploads. Returns rows deleted."""
+    con = _connect()
+    try:
+        count = con.execute(
+            "SELECT count(*) FROM supa.submissions WHERE batch_id = ? AND submitter_id = ?",
+            [batch_id, user["user_id"]],
+        ).fetchone()[0]
+        if count:
+            con.execute(
+                "DELETE FROM supa.submissions WHERE batch_id = ? AND submitter_id = ?",
+                [batch_id, user["user_id"]],
+            )
+        return count
+    finally:
+        con.close()
+
+
+def review_batch(batch_id: str, reviewer_user_id: str, status: str, review_notes: str | None) -> int:
+    """Approve or reject every still-pending submission in a batch. Returns rows updated."""
+    if status not in VALID_STATUSES:
+        raise ValueError(f"status must be one of {VALID_STATUSES}")
+    con = _connect()
+    try:
+        count = con.execute(
+            "SELECT count(*) FROM supa.submissions WHERE batch_id = ? AND status = 'pending'",
+            [batch_id],
+        ).fetchone()[0]
+        if count:
+            con.execute(
+                """
+                UPDATE supa.submissions
+                SET status = ?, reviewed_by = ?, review_notes = ?, reviewed_at = now()
+                WHERE batch_id = ? AND status = 'pending'
+                """,
+                [status, reviewer_user_id, review_notes, batch_id],
+            )
+        return count
     finally:
         con.close()
 

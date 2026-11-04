@@ -6,3 +6,4 @@ pandas
 dendropy
 supabase
 python-dotenv
+openpyxl

@@ -4,15 +4,17 @@ load_dotenv()
 
 import asyncio
 import math
+import uuid
 from contextlib import asynccontextmanager
 
 import httpx
 import pandas as pd
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import auth
+import bulk_upload
 import fishbase_data
 import phylogeny_data
 import submissions
@@ -223,6 +225,19 @@ class SubmissionCreate(BaseModel):
     source_citation: str = ""
 
 
+class BulkChange(BaseModel):
+    genus: str
+    species: str
+    field_name: str
+    field_value: str
+    source_citation: str = ""
+
+
+class BulkSubmissionCreate(BaseModel):
+    changes: list[BulkChange]
+    default_citation: str = ""
+
+
 class ReviewAction(BaseModel):
     review_notes: str | None = None
 
@@ -395,6 +410,137 @@ async def post_submission(payload: SubmissionCreate, user: dict = Depends(auth.v
         payload.source_citation,
     )
     return {"id": submission_id}
+
+
+def _require_uuid(value: str, detail: str) -> str:
+    try:
+        return str(uuid.UUID(value))
+    except ValueError:
+        raise HTTPException(status_code=404, detail=detail)
+
+
+async def _already_submitted(user: dict) -> set:
+    own = await asyncio.to_thread(submissions.list_own_submissions, user)
+    return bulk_upload.already_submitted_keys(own)
+
+
+@app.get("/submissions/template")
+async def download_submission_template():
+    """Public CSV of every species with its current values, for bulk editing."""
+    df, version = await fishbase_data.get_species_table(http_client)
+    text = await asyncio.to_thread(bulk_upload.build_template_csv, df)
+    return Response(
+        content=text.encode("utf-8-sig"),  # BOM so Excel opens it as UTF-8
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="cichlid-traits-template-v{version}.csv"'
+        },
+    )
+
+
+@app.post("/submissions/bulk/preview")
+async def preview_bulk_submission(
+    request: Request,
+    filename: str = Query(...),
+    user: dict = Depends(auth.verify_token),
+):
+    """Parse an uploaded CSV/XLSX (raw request body) and report what would be
+    submitted. Nothing is saved."""
+    declared = int(request.headers.get("content-length") or 0)
+    if declared > bulk_upload.MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File is larger than 5 MB.")
+    data = await request.body()
+    df, _ = await fishbase_data.get_species_table(http_client)
+    existing = await _already_submitted(user)
+    try:
+        return await asyncio.to_thread(bulk_upload.preview_file, filename, data, df, existing)
+    except bulk_upload.BulkUploadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+
+@app.post("/submissions/bulk")
+async def post_bulk_submission(
+    payload: BulkSubmissionCreate,
+    user: dict = Depends(auth.verify_token),
+):
+    """Re-validate previewed changes server-side and store them as one pending batch."""
+    if not payload.changes:
+        raise HTTPException(status_code=422, detail="Nothing to submit.")
+    if len(payload.changes) > bulk_upload.MAX_CHANGES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Upload at most {bulk_upload.MAX_CHANGES:,} values at a time.",
+        )
+    default_citation = payload.default_citation.strip()
+    cells = [
+        {
+            "row": i + 1,
+            "genus": c.genus,
+            "species": c.species,
+            "field_name": c.field_name.strip(),
+            "value": c.field_value,
+            "source_citation": c.source_citation.strip() or default_citation,
+        }
+        for i, c in enumerate(payload.changes)
+    ]
+    df, _ = await fishbase_data.get_species_table(http_client)
+    existing = await _already_submitted(user)
+    result = await asyncio.to_thread(
+        bulk_upload.evaluate, cells, bulk_upload.SpeciesContext(df), existing
+    )
+    if result["errors"]:
+        first = result["errors"][0]
+        raise HTTPException(
+            status_code=422,
+            detail=f"{result['error_count']} value(s) failed validation, e.g. {first['message']}",
+        )
+    if not result["changes"]:
+        raise HTTPException(status_code=422, detail="Nothing new to submit.")
+    batch_id = await asyncio.to_thread(
+        submissions.create_submission_batch, user, result["changes"]
+    )
+    return {"batch_id": batch_id, "count": len(result["changes"])}
+
+
+@app.delete("/submissions/batches/{batch_id}")
+async def delete_my_batch(batch_id: str, user: dict = Depends(auth.verify_token)):
+    batch_id = _require_uuid(batch_id, "Upload not found")
+    deleted = await asyncio.to_thread(submissions.delete_own_batch, user, batch_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Upload not found")
+    fishbase_data.invalidate_community_cache()
+    await phylogeny_data.invalidate_trait_cache()
+    return {"status": "deleted", "count": deleted}
+
+
+@app.post("/submissions/batches/{batch_id}/approve")
+async def approve_batch(
+    batch_id: str, payload: ReviewAction, user: dict = Depends(auth.verify_token)
+):
+    auth.require_admin(user)
+    batch_id = _require_uuid(batch_id, "No pending submissions in this upload")
+    count = await asyncio.to_thread(
+        submissions.review_batch, batch_id, user["user_id"], "approved", payload.review_notes
+    )
+    if not count:
+        raise HTTPException(status_code=404, detail="No pending submissions in this upload")
+    fishbase_data.invalidate_community_cache()
+    await phylogeny_data.invalidate_trait_cache()
+    return {"status": "approved", "count": count}
+
+
+@app.post("/submissions/batches/{batch_id}/reject")
+async def reject_batch(
+    batch_id: str, payload: ReviewAction, user: dict = Depends(auth.verify_token)
+):
+    auth.require_admin(user)
+    batch_id = _require_uuid(batch_id, "No pending submissions in this upload")
+    count = await asyncio.to_thread(
+        submissions.review_batch, batch_id, user["user_id"], "rejected", payload.review_notes
+    )
+    if not count:
+        raise HTTPException(status_code=404, detail="No pending submissions in this upload")
+    return {"status": "rejected", "count": count}
 
 
 @app.get("/submissions/mine")

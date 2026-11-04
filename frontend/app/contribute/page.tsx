@@ -1,7 +1,8 @@
 ﻿"use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import BulkUpload from "@/components/BulkUpload";
 import MultiSelectDropdown from "@/components/MultiSelectDropdown";
 import { createClient } from "@/utils/supabase/client";
 import { formatTraitField, formatTraitValue, getTraitValueOptions } from "@/utils/traitLabels";
@@ -38,7 +39,22 @@ type Submission = {
   review_notes: string | null;
   created_at: string;
   reviewed_at: string | null;
+  batch_id: string | null;
 };
+
+type UploadSummary = {
+  batchId: string;
+  createdAt: string;
+  total: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+};
+
+const tabClass = (active: boolean) =>
+  `rounded-full border border-black px-3 py-1 text-xs font-semibold shadow-sm ${
+    active ? "bg-black text-white" : "bg-white text-black hover:bg-black/10"
+  }`;
 
 export default function ContributePage() {
   const [userEmail, setUserEmail] = useState<string | null | undefined>(undefined);
@@ -57,7 +73,28 @@ export default function ContributePage() {
   const [success, setSuccess] = useState("");
   const [mine, setMine] = useState<Submission[]>([]);
   const [loadingMine, setLoadingMine] = useState(true);
+  const [mode, setMode] = useState<"bulk" | "single">("bulk");
   const valueOptions = getTraitValueOptions(fieldKey);
+
+  const uploads = useMemo(() => {
+    const byBatch = new Map<string, UploadSummary>();
+    for (const s of mine) {
+      if (!s.batch_id) continue;
+      const summary = byBatch.get(s.batch_id) ?? {
+        batchId: s.batch_id,
+        createdAt: s.created_at,
+        total: 0,
+        pending: 0,
+        approved: 0,
+        rejected: 0,
+      };
+      summary.total += 1;
+      summary[s.status] += 1;
+      if (s.created_at < summary.createdAt) summary.createdAt = s.created_at;
+      byBatch.set(s.batch_id, summary);
+    }
+    return [...byBatch.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  }, [mine]);
 
   useEffect(() => {
     const supabase = createClient();
@@ -196,6 +233,33 @@ export default function ContributePage() {
     }
   }
 
+  async function handleUndoUpload(upload: UploadSummary) {
+    if (!accessToken || undoing) return;
+    const approvedWarning =
+      upload.approved > 0 ? ` ${upload.approved} approved value(s) will also be removed from the site.` : "";
+    if (!window.confirm(`Undo this whole upload of ${upload.total} value(s)?${approvedWarning}`)) return;
+
+    setUndoing(upload.batchId);
+    setError("");
+    setSuccess("");
+    try {
+      const res = await fetch(`${API}/submissions/batches/${upload.batchId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.detail ?? `Undo failed (${res.status})`);
+      }
+      setMine((current) => current.filter((item) => item.batch_id !== upload.batchId));
+      setSuccess("Upload undone.");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not undo upload.");
+    } finally {
+      setUndoing(null);
+    }
+  }
+
   if (userEmail === undefined) {
     return <main className="px-4 py-12 text-center text-black">Loading...</main>;
   }
@@ -222,6 +286,34 @@ export default function ContributePage() {
         They never override FishBase&apos;s own values. A source citation is highly recommended.
       </p>
 
+      <div className="mb-3 flex gap-2" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "bulk"}
+          onClick={() => setMode("bulk")}
+          className={tabClass(mode === "bulk")}
+        >
+          Spreadsheet upload
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "single"}
+          onClick={() => setMode("single")}
+          className={tabClass(mode === "single")}
+        >
+          Single value
+        </button>
+      </div>
+
+      {mode === "bulk" && accessToken && (
+        <div className="mb-10">
+          <BulkUpload accessToken={accessToken} onSubmitted={() => loadMine(accessToken)} />
+        </div>
+      )}
+
+      {mode === "single" && (
       <form onSubmit={handleSubmit} className="mb-10 flex flex-col gap-3 rounded-lg border border-black bg-white/80 p-4 shadow-sm">
         <label className="flex flex-col gap-1 text-xs font-semibold">
           Species
@@ -304,6 +396,45 @@ export default function ContributePage() {
           {submitting ? "Submitting..." : "Submit"}
         </button>
       </form>
+      )}
+
+      {mode === "bulk" && (error || success) && (
+        <div className="-mt-8 mb-6">
+          {error && <p className="text-xs text-red-600">{error}</p>}
+          {success && <p className="text-xs text-green-700">{success}</p>}
+        </div>
+      )}
+
+      {uploads.length > 0 && (
+        <>
+          <h2 className="mb-2 text-sm font-bold">Your uploads</h2>
+          <ul className="mb-8 flex flex-col gap-2">
+            {uploads.map((u) => (
+              <li
+                key={u.batchId}
+                className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-lg border border-black bg-white/80 px-3 py-2 text-xs shadow-sm"
+              >
+                <span className="font-semibold">
+                  {new Date(u.createdAt).toLocaleDateString()}: {u.total.toLocaleString()} value
+                  {u.total === 1 ? "" : "s"}
+                </span>
+                <span className="text-black/60">
+                  {u.pending} pending · <span className="text-green-700">{u.approved} approved</span> ·{" "}
+                  <span className="text-red-700">{u.rejected} rejected</span>
+                </span>
+                <button
+                  type="button"
+                  disabled={undoing !== null}
+                  onClick={() => handleUndoUpload(u)}
+                  className="ml-auto rounded-full border border-black bg-white px-2.5 py-1 text-xs font-semibold text-black hover:bg-black hover:text-white disabled:opacity-40"
+                >
+                  {undoing === u.batchId ? "Undoing..." : "Undo upload"}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
 
       <h2 className="mb-2 text-sm font-bold">Your submissions</h2>
       {loadingMine ? (

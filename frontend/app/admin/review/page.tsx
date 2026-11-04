@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import AdminDataEditor from "@/components/AdminDataEditor";
 import { createClient } from "@/utils/supabase/client";
@@ -18,7 +18,20 @@ type PendingSubmission = {
   field_value: string;
   source_citation: string;
   created_at: string;
+  batch_id: string | null;
 };
+
+type PendingBatch = {
+  batchId: string;
+  submitter: string;
+  email: string;
+  createdAt: string;
+  items: PendingSubmission[];
+  fieldCounts: [string, number][];
+};
+
+const smallButton =
+  "h-7 rounded-full border border-black bg-white px-3 text-xs font-semibold text-black shadow-sm hover:bg-black hover:text-white disabled:opacity-40";
 
 type Status = "loading" | "unauthenticated" | "forbidden" | "ready" | "error";
 
@@ -29,6 +42,33 @@ export default function AdminReviewPage() {
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({});
   const [actingOn, setActingOn] = useState<string | null>(null);
   const [error, setError] = useState("");
+
+  const singles = useMemo(() => pending.filter((p) => !p.batch_id), [pending]);
+  const batches = useMemo(() => {
+    const byBatch = new Map<string, PendingBatch>();
+    for (const p of pending) {
+      if (!p.batch_id) continue;
+      let batch = byBatch.get(p.batch_id);
+      if (!batch) {
+        batch = {
+          batchId: p.batch_id,
+          submitter: p.submitter_display_name,
+          email: p.submitter_email,
+          createdAt: p.created_at,
+          items: [],
+          fieldCounts: [],
+        };
+        byBatch.set(p.batch_id, batch);
+      }
+      batch.items.push(p);
+    }
+    for (const batch of byBatch.values()) {
+      const counts = new Map<string, number>();
+      for (const item of batch.items) counts.set(item.field_name, (counts.get(item.field_name) ?? 0) + 1);
+      batch.fieldCounts = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    }
+    return [...byBatch.values()];
+  }, [pending]);
 
   useEffect(() => {
     const supabase = createClient();
@@ -85,6 +125,30 @@ export default function AdminReviewPage() {
     }
   }
 
+  async function actBatch(batch: PendingBatch, action: "approve" | "reject") {
+    if (!accessToken) return;
+    const verb = action === "approve" ? "Approve" : "Reject";
+    if (!window.confirm(`${verb} all ${batch.items.length} pending values in this upload?`)) return;
+    setActingOn(batch.batchId);
+    setError("");
+    try {
+      const res = await fetch(`${API}/submissions/batches/${batch.batchId}/${action}`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken}`,
+        },
+        body: JSON.stringify({ review_notes: reviewNotes[batch.batchId]?.trim() || null }),
+      });
+      if (!res.ok) throw new Error(`Action failed (${res.status})`);
+      setPending((prev) => prev.filter((p) => p.batch_id !== batch.batchId));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Action failed.");
+    } finally {
+      setActingOn(null);
+    }
+  }
+
   if (status === "loading") {
     return <main className="px-4 py-12 text-center text-black">Loading...</main>;
   }
@@ -119,16 +183,109 @@ export default function AdminReviewPage() {
     <main className="mx-auto w-full max-w-3xl px-4 py-8 text-black sm:px-6">
       <h1 className="mb-1 text-lg font-bold">Review submissions</h1>
       <p className="mb-6 text-xs text-black/60">
-        {pending.length} pending submission{pending.length === 1 ? "" : "s"}.
+        {pending.length} pending submission{pending.length === 1 ? "" : "s"}
+        {batches.length > 0 && ` (${batches.length} spreadsheet upload${batches.length === 1 ? "" : "s"})`}.
       </p>
 
       {error && <p className="mb-4 text-xs text-red-600">{error}</p>}
 
+      {batches.length > 0 && (
+        <div className="mb-6 flex flex-col gap-3">
+          {batches.map((batch) => (
+            <div key={batch.batchId} className="rounded-lg border border-black bg-white/80 p-3 shadow-sm">
+              <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2 text-xs">
+                <span className="font-semibold">
+                  Spreadsheet upload: {batch.items.length.toLocaleString()} value
+                  {batch.items.length === 1 ? "" : "s"}
+                </span>
+                <span className="text-black/60">
+                  {batch.submitter} ({batch.email}), {new Date(batch.createdAt).toLocaleDateString()}
+                </span>
+              </div>
+              <p className="mb-2 text-xs text-black/70">
+                {batch.fieldCounts.map(([field, n]) => `${formatTraitField(field)} (${n})`).join(", ")}
+              </p>
+              <details className="mb-2 text-xs">
+                <summary className="cursor-pointer font-semibold">Show values</summary>
+                <div className="mt-2 max-h-72 overflow-auto overscroll-contain rounded-md border border-black [scrollbar-gutter:stable]">
+                  <table className="w-full text-left text-xs">
+                    <thead className="sticky top-0 bg-white shadow-[0_1px_0_0_rgba(0,0,0,1)]">
+                      <tr className="bg-black/5">
+                        <th className="px-2 py-1.5">Species</th>
+                        <th className="px-2 py-1.5">Field</th>
+                        <th className="px-2 py-1.5">Value</th>
+                        <th className="px-2 py-1.5">Source</th>
+                        <th className="px-2 py-1.5"><span className="sr-only">Actions</span></th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {batch.items.map((s) => (
+                        <tr key={s.id} className="border-b border-black/10 last:border-0">
+                          <td className="px-2 py-1 italic">
+                            {s.genus} {s.species}
+                          </td>
+                          <td className="px-2 py-1">{formatTraitField(s.field_name)}</td>
+                          <td className="px-2 py-1">{formatTraitValue(s.field_name, s.field_value)}</td>
+                          <td className="px-2 py-1 text-black/60">{s.source_citation || "Not provided"}</td>
+                          <td className="whitespace-nowrap px-2 py-1 text-right">
+                            <button
+                              type="button"
+                              disabled={actingOn !== null}
+                              onClick={() => act(s.id, "approve")}
+                              className="mr-1 rounded-full border border-black px-2 text-[11px] hover:bg-black hover:text-white disabled:opacity-40"
+                            >
+                              Approve
+                            </button>
+                            <button
+                              type="button"
+                              disabled={actingOn !== null}
+                              onClick={() => act(s.id, "reject")}
+                              className="rounded-full border border-black px-2 text-[11px] hover:bg-black hover:text-white disabled:opacity-40"
+                            >
+                              Reject
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+              <input
+                type="text"
+                placeholder="Review notes for the whole upload (optional)"
+                value={reviewNotes[batch.batchId] ?? ""}
+                onChange={(e) => setReviewNotes((prev) => ({ ...prev, [batch.batchId]: e.target.value }))}
+                className="h-8 w-full rounded-md border border-black bg-white px-2 text-xs text-black shadow-sm focus:border-[#1b7cb2] focus:outline-none focus:ring-2 focus:ring-white"
+              />
+              <div className="mt-2 flex gap-2">
+                <button
+                  type="button"
+                  disabled={actingOn !== null}
+                  onClick={() => actBatch(batch, "approve")}
+                  className={smallButton}
+                >
+                  {actingOn === batch.batchId ? "Working..." : "Approve all"}
+                </button>
+                <button
+                  type="button"
+                  disabled={actingOn !== null}
+                  onClick={() => actBatch(batch, "reject")}
+                  className={smallButton}
+                >
+                  Reject all
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
       {pending.length === 0 ? (
         <p className="text-xs text-black/60">Nothing to review.</p>
-      ) : (
+      ) : singles.length === 0 ? null : (
         <div className="flex max-h-[32rem] flex-col gap-3 overflow-y-auto overscroll-contain pr-1 [scrollbar-gutter:stable]">
-          {pending.map((s) => (
+          {singles.map((s) => (
             <div key={s.id} className="rounded-lg border border-black bg-white/80 p-3 shadow-sm">
               <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2 text-xs">
                 <span className="font-semibold italic">
